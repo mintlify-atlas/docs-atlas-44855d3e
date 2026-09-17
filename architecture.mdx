@@ -1,7 +1,7 @@
 ---
-title: "RutaMovil System Architecture and Tech Stack"
+title: "RutaMovil Architecture: Client, REST API and Firebase"
 sidebarTitle: "Architecture"
-description: "Explore how RutaMovil's React Native client, Spring Boot REST backend, Firebase services, and WebSocket channels connect to deliver real-time road safety management."
+description: "Explore RutaMovil's React Native client, Spring Boot REST backend, Firebase authentication, push notifications, and STOMP WebSocket channels."
 ---
 
 RutaMovil is built on a three-tier architecture: a **React Native 0.82 mobile client** that runs on both Android and iOS, a **Spring Boot REST API** deployed on Google Cloud Run that owns all business logic and persistence, and a **Firebase** layer that handles identity, push notifications, and the initial token exchange. A persistent **STOMP/SockJS WebSocket** channel sits alongside the REST API to push accident events to authority dashboards without polling. Understanding how these tiers relate to each other is the foundation for working on any part of the codebase.
@@ -219,8 +219,8 @@ Reconnection uses exponential backoff (`reconnectDelay × 2^(attempt − 1)`) up
     | Library | Version | Purpose |
     |---|---|---|
     | `axios` | `^1.13.2` | REST API HTTP client |
-    | `@stomp/stompjs` | (transitive) | STOMP messaging over WebSocket |
-    | `sockjs-client` | (transitive) | SockJS WebSocket transport |
+    | `@stomp/stompjs` | (not in package.json) | STOMP messaging — imported in `websocketService.jsx` but not declared as a direct dependency |
+    | `sockjs-client` | (not in package.json) | SockJS transport — imported in `websocketService.jsx` but not declared as a direct dependency |
     | `@react-native-community/netinfo` | `^11.4.1` | Network connectivity detection |
   </Tab>
   <Tab title="Build & Tooling">

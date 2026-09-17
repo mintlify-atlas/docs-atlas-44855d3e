@@ -249,8 +249,6 @@ const handleLogout = async () => {
   setShowMFAVerification(false);
   setMfaCode("");
 
-  // firebaseNotificationService.unregisterToken() is called by the
-  // dashboard components before invoking onLogout
   if (onClose) {
     onClose();
   }
@@ -258,5 +256,5 @@ const handleLogout = async () => {
 ```
 
 <Warning>
-  Skipping logout without unregistering the FCM token means the device will continue to receive push notifications for the previous user's account until the token expires.
+  Before `onLogout` is called, each dashboard component (`DashboardAutoridad`, `DashboardTransportista`) calls `firebaseNotificationService.unregisterToken()` to remove the FCM push token for the current user. Skipping logout without going through this flow means the device will continue to receive push notifications for the previous user's account.
 </Warning>

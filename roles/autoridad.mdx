@@ -1,7 +1,7 @@
 ---
-title: "Autoridad Role: Traffic Authority Dashboard"
+title: "Autoridad Role: Traffic Authority Dashboard and Approvals"
 sidebarTitle: "Autoridad"
-description: "Guide to the Autoridad role in RutaMovil — covering authentication, accident approval workflows, statistical reports, real-time map, and push notifications."
+description: "Guide to the Autoridad role in RutaMovil — covering authentication, accident approval workflows, statistical reports, live map, and push notifications."
 ---
 
 The **Autoridad** (traffic authority) role is the review and oversight layer of RutaMovil / Sicher. Traffic authority users receive real-time push notifications when drivers submit accident reports, approve or reject those reports, supplement them with victim and vehicle data, and analyze accident trends through date-ranged statistical dashboards — all within a purpose-built mobile interface.
@@ -134,20 +134,32 @@ The **Reportes** tab renders the `Reportes` component, which provides a full acc
 | `vehiculos`   | Vehicle type bars + top 5 makes (`topMarcas`)      |
 | `victimas`    | Victims by gender, age range, and condition totals |
 
+The selector is rendered as a horizontally-scrollable row of chip buttons, each toggling `tipoGrafico` state:
+
 ```jsx
-// Reportes.jsx — chart mode selector
-const tiposGrafico = [
-  { key: 'general', icon: '📊', label: 'General' },
-  { key: 'mensual', icon: '📅', label: 'Por Mes' },
-  { key: 'tipos',   icon: '📋', label: 'Por Tipo' },
-  { key: 'estado',  icon: '⚠️', label: 'Estados' },
-  { key: 'horario', icon: '🕐', label: 'Por Hora' },
-  { key: 'semanal', icon: '📆', label: 'Por Día' },
-  { key: 'ubicaciones', icon: '📍', label: 'Ubicaciones' },
-  { key: 'vehiculos',   icon: '🚗', label: 'Vehículos' },
-  { key: 'victimas',    icon: '👥', label: 'Víctimas' }
-];
-```
+// Reportes.jsx — chart mode selector (inline array in JSX)
+{[
+  { key: 'general',    icon: '📊', label: 'General' },
+  { key: 'mensual',    icon: '📅', label: 'Por Mes' },
+  { key: 'tipos',      icon: '📋', label: 'Por Tipo' },
+  { key: 'estado',     icon: '⚠️', label: 'Estados' },
+  { key: 'horario',    icon: '🕐', label: 'Por Hora' },
+  { key: 'semanal',    icon: '📆', label: 'Por Día' },
+  { key: 'ubicaciones',icon: '📍', label: 'Ubicaciones' },
+  { key: 'vehiculos',  icon: '🚗', label: 'Vehículos' },
+  { key: 'victimas',   icon: '👥', label: 'Víctimas' }
+].map((tipo) => (
+  <TouchableOpacity
+    key={tipo.key}
+    style={[
+      styles.tipoGraficoButton,
+      tipoGrafico === tipo.key && styles.tipoGraficoButtonActive
+    ]}
+    onPress={() => setTipoGrafico(tipo.key)}
+  >
+    <Text>{tipo.icon} {tipo.label}</Text>
+  </TouchableOpacity>
+))}
 
 ### Summary Statistics
 

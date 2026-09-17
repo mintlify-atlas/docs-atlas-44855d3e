@@ -1,5 +1,5 @@
 ---
-title: "Admin Role: System Administration and Reports"
+title: "Admin Role: System Administration, Logs, and Reports"
 sidebarTitle: "Admin"
 description: "Guide to the Admin role in RutaMovil — covering the admin login flow, system information panel, audit log viewer, and administrative reports dashboard."
 ---
@@ -214,7 +214,27 @@ Tapping the **Reportes** tab replaces the dashboard view with `ReportesAdmin`, a
 </TouchableOpacity>
 ```
 
-`ReportesAdmin` provides administrative-level reporting views analogous to the Autoridad's `Reportes` component but scoped to system-wide data accessible only to admins.
+`ReportesAdmin` fetches data from two endpoints in parallel and renders native chart components from `react-native-chart-kit`:
+
+```jsx
+// ReportesAdmin.jsx
+const [dashResponse, usuariosResponse] = await Promise.all([
+  API.get('/dashboard/general'),
+  API.get('/usuarios/activos')
+]);
+```
+
+Three chart tabs are available via the `selectedChart` state:
+
+| Tab key      | Visualization                                                  |
+|--------------|----------------------------------------------------------------|
+| `acciones`   | Pie chart of action-type distribution (`accionesPorTipo`)      |
+| `actividad`  | Bar chart of activity grouped by period                        |
+| `usuarios`   | Active-user list with per-user activity metrics                |
+
+<Note>
+  `ReportesAdmin` uses `LineChart`, `BarChart`, and `PieChart` from `react-native-chart-kit` — distinct from the custom bar/line rendering used in the Autoridad's `Reportes` component.
+</Note>
 
 ---
 

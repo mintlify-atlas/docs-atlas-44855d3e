@@ -1,5 +1,5 @@
 ---
-title: "Build and Run RutaMovil on iOS"
+title: "RutaMovil iOS Build: Simulator and Device Setup Guide"
 sidebarTitle: "iOS Build"
 description: "Configure Xcode, CocoaPods, and GoogleService-Info.plist to build and run the RutaMovil app on an iOS Simulator or physical iPhone."
 ---
@@ -140,6 +140,12 @@ require Pod::Executable.execute_command('node', ['-p',
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
 
+linkage = ENV['USE_FRAMEWORKS']
+if linkage != nil
+  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
+  use_frameworks! :linkage => linkage.to_sym
+end
+
 target 'ruta' do
   config = use_native_modules!
 
@@ -154,6 +160,7 @@ target 'ruta' do
       installer,
       config[:reactNativePath],
       :mac_catalyst_enabled => false,
+      # :ccache_enabled => true
     )
   end
 end
@@ -245,14 +252,22 @@ Inside Xcode you can:
 
 ## App Bundle ID and Info.plist
 
-The iOS bundle identifier is `com.ruta`, set in Xcode's target Build Settings as `$(PRODUCT_BUNDLE_IDENTIFIER)`. This value is referenced in `ios/ruta/Info.plist`:
+The iOS bundle identifier is set in Xcode's target Build Settings as `$(PRODUCT_BUNDLE_IDENTIFIER)`. The default value resolved from `ios/ruta.xcodeproj/project.pbxproj` is:
+
+```
+org.reactjs.native.example.ruta
+```
+
+This value is referenced in `ios/ruta/Info.plist`:
 
 ```xml ios/ruta/Info.plist (excerpt)
 <key>CFBundleIdentifier</key>
 <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 ```
 
-This ID must match the bundle ID registered in the Firebase console for `GoogleService-Info.plist` to be accepted.
+<Warning>
+  Before registering the app in the Firebase console, check the exact bundle ID in Xcode under **Target → Build Settings → Packaging → Product Bundle Identifier**. The value in `GoogleService-Info.plist` must match this identifier exactly, or Firebase will fail to initialise.
+</Warning>
 
 ---
 

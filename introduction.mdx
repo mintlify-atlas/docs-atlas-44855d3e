@@ -1,5 +1,5 @@
 ---
-title: "RutaMovil: Mobile Road Safety Management Platform"
+title: "RutaMovil: Road Safety Management for Mobile Teams"
 sidebarTitle: "Introduction"
 description: "RutaMovil (Sicher) is a React Native app connecting drivers, traffic authorities, and admins for real-time road accident reporting and management."
 ---
@@ -37,7 +37,7 @@ RutaMovil organises access around three roles, each with its own dashboard and p
 </Accordion>
 
 <Accordion title="Real-Time Push Notifications">
-  Firebase Cloud Messaging (FCM) via `@react-native-firebase/messaging` delivers alerts for new reports (`NUEVO_ACCIDENTE`), approvals (`ACCIDENTE_APROBADO`), and rejections (`ACCIDENTE_RECHAZADO`). The `FirebaseService` class handles token registration, foreground display with Notifee, and deep-link routing on notification tap.
+  Firebase Cloud Messaging (FCM) via `@react-native-firebase/messaging` delivers alerts for new reports (`NUEVO_ACCIDENTE`), approvals (`ACCIDENTE_APROBADO`), and rejections (`ACCIDENTE_RECHAZADO`). The `FirebaseService` class handles permission requests, token registration with the backend, and foreground notification display via Notifee on the `sicher-accidents` Android channel.
 </Accordion>
 
 <Accordion title="STOMP/SockJS WebSocket Feed">

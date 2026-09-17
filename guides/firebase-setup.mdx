@@ -4,7 +4,7 @@ sidebarTitle: "Firebase Setup"
 description: "Step-by-step guide to wiring Firebase Auth and Cloud Messaging into RutaMovil (Sicher) for push notifications and secure user authentication."
 ---
 
-RutaMovil (Sicher) relies on two Firebase products to power its identity and notification layers: **Firebase Auth** (`@react-native-firebase/auth`) handles email/password and Google OAuth sign-in flows for all three user roles, while **Firebase Cloud Messaging** (`@react-native-firebase/messaging`) delivers real-time push notifications when accidents are reported, approved, or rejected. This page walks through creating the Firebase project, placing the native config files, and understanding the `FirebaseService` class that wires everything together at runtime.
+RutaMovil (Sicher) relies on two Firebase products to power its identity and notification layers: **Firebase Auth** (`@react-native-firebase/auth`) handles email/password and Google OAuth sign-in flows for all three user roles, while **Firebase Cloud Messaging** (`@react-native-firebase/messaging`) delivers real-time push notifications when accidents are reported, approved, or rejected. This page walks through creating the Firebase project, placing the native config files, and understanding the two notification service classes that wire everything together at runtime.
 
 <Warning>
   `google-services.json` (Android) and `GoogleService-Info.plist` (iOS) contain
@@ -65,7 +65,7 @@ RutaMovil (Sicher) relies on two Firebase products to power its identity and not
     apply plugin: 'com.google.gms.google-services'
     ```
 
-    Firebase dependencies are also declared in the same file:
+    Firebase dependencies are declared using the BOM in the same file:
 
     ```groovy android/app/build.gradle
     // 🔥 FIREBASE HABILITADO
@@ -100,7 +100,7 @@ RutaMovil (Sicher) relies on two Firebase products to power its identity and not
     });
     ```
 
-    Replace the `webClientId` value with the **Web client (auto created by Google Service)** OAuth 2.0 client ID found in **Firebase Console → Project Settings → General → Your apps → Web API Key** or directly in the Google Cloud Console under **APIs & Services → Credentials**.
+    Replace the `webClientId` value with the **Web client (auto created by Google Service)** OAuth 2.0 client ID found in **Firebase Console → Project Settings → General → Your apps** or directly in the Google Cloud Console under **APIs & Services → Credentials**.
   </Step>
 
   <Step title="Install React Native Firebase packages">
@@ -113,17 +113,18 @@ RutaMovil (Sicher) relies on two Firebase products to power its identity and not
     ```
 
     Foreground notification display additionally requires
-    `@notifee/react-native` as a **peer dependency** — install it separately if
-    it is not already present in your project:
+    `@notifee/react-native`, which is **not** included in the default
+    `package.json` and must be installed separately:
 
     ```bash
     npm install @notifee/react-native
     ```
 
     <Note>
-      `@notifee/react-native` is used exclusively for rendering foreground
-      notifications with a custom Android channel. Background and quit-state
-      notifications are handled natively by the FCM SDK without Notifee.
+      `@notifee/react-native` is used exclusively by `FirebaseService` for
+      rendering foreground notifications with a custom Android channel.
+      Background and quit-state notifications are handled natively by the FCM
+      SDK without Notifee.
     </Note>
   </Step>
 </Steps>
@@ -133,8 +134,9 @@ RutaMovil (Sicher) relies on two Firebase products to power its identity and not
 ## FirebaseService Class
 
 The `FirebaseService` class in `src/services/firebase.jsx` is a singleton that
-centralises all Firebase interactions. It is exported as a default instance and
-consumed by the `useFirebaseNotifications` hook.
+centralises Firebase interactions for foreground notification display. It is
+exported as the default instance and consumed by the `useFirebaseNotifications`
+hook.
 
 <CardGroup cols={2}>
   <Card title="initialize()" icon="rocket">
@@ -151,7 +153,7 @@ consumed by the `useFirebaseNotifications` hook.
     See the full implementation below.
   </Card>
   <Card title="setupNotificationListeners()" icon="bell">
-    Registers three FCM listeners: `onMessage` (foreground), 
+    Registers three FCM listeners: `onMessage` (foreground),
     `setBackgroundMessageHandler` (background/quit), and
     `onNotificationOpenedApp` (tap-to-open).
   </Card>
@@ -173,7 +175,7 @@ consumed by the `useFirebaseNotifications` hook.
 
 This method selects the correct REST endpoint based on the user's role and
 persists the FCM device token so the backend can target the right user for
-push notifications:
+push notifications. The body always includes both `userId` and `fcmToken`:
 
 ```jsx src/services/firebase.jsx
 async saveTokenToBackend(userId, userType, token) {
@@ -196,10 +198,80 @@ async saveTokenToBackend(userId, userType, token) {
 
 ---
 
+## FirebaseNotificationService Class
+
+`src/services/FirebaseNotificationService.jsx` exports a **separate** singleton
+class designed for use in dashboard components. Unlike `FirebaseService`, it
+takes `userId` and `userRole` at initialisation time, stores them as instance
+state, and uses path-parameter style endpoints when registering the FCM token.
+
+<CardGroup cols={2}>
+  <Card title="initialize(userId, userRole)" icon="rocket">
+    Stores `userId` and `userRole`, requests permissions, obtains the FCM
+    token, configures listeners, and registers the token in the backend.
+    Returns `true` on success or `false` on failure.
+  </Card>
+  <Card title="requestPermission()" icon="shield">
+    On Android 13+ (API 33) requests `POST_NOTIFICATIONS` via
+    `PermissionsAndroid`. On iOS uses `messaging().requestPermission()`.
+  </Card>
+  <Card title="getFCMToken()" icon="key">
+    Calls `messaging().getToken()`, stores the result in `this.fcmToken`, and
+    returns it.
+  </Card>
+  <Card title="registerTokenInBackend()" icon="database">
+    POSTs `{ fcmToken }` to the path-parameter endpoint:
+    `/autoridades/:id/fcm-token` or `/transportistas/:id/fcm-token`.
+  </Card>
+  <Card title="setupListeners()" icon="bell">
+    Attaches foreground (`onMessage`), background tap (`onNotificationOpenedApp`),
+    cold-start (`getInitialNotification`), and token-refresh listeners.
+  </Card>
+  <Card title="cleanup()" icon="trash">
+    Calls the unsubscribe functions returned by `onMessage` and `onTokenRefresh`
+    to remove all active listeners.
+  </Card>
+  <Card title="unregisterToken()" icon="x">
+    DELETEs the token from the backend endpoint (`/autoridades/:id/fcm-token`
+    or `/transportistas/:id/fcm-token`) and calls
+    `messaging().deleteToken()`. Call this on logout.
+  </Card>
+</CardGroup>
+
+### registerTokenInBackend vs. saveTokenToBackend
+
+The two service classes use **different endpoint shapes** for the same
+conceptual operation:
+
+| Class | Endpoint | Body |
+|---|---|---|
+| `FirebaseService` | `POST /autoridades/fcm-token` | `{ userId, fcmToken }` |
+| `FirebaseNotificationService` | `POST /autoridades/:id/fcm-token` | `{ fcmToken }` |
+
+Use `FirebaseService` (via `useFirebaseNotifications`) when the dashboard
+component does not need lifecycle management of the notification service itself.
+Use `FirebaseNotificationService` directly when you need explicit `cleanup()`
+and `unregisterToken()` control, such as in a component that manages the full
+user session.
+
+```jsx src/services/FirebaseNotificationService.jsx
+async registerTokenInBackend() {
+  const endpoint = this.userRole === 'autoridad'
+    ? `/autoridades/${this.userId}/fcm-token`
+    : `/transportistas/${this.userId}/fcm-token`;
+
+  await API.post(endpoint, {
+    fcmToken: this.fcmToken
+  });
+}
+```
+
+---
+
 ## Android Notification Channel
 
 Android 8.0 (API 26) and above require a notification channel before a local
-notification can be displayed. `displayNotification()` calls
+notification can be displayed. `FirebaseService.displayNotification()` calls
 `notifee.createChannel()` every time it runs (Notifee is idempotent for
 existing channels):
 
@@ -225,9 +297,9 @@ const channelId = await notifee.createChannel({
 
 ## useFirebaseNotifications Hook
 
-The `useFirebaseNotifications` hook is exported alongside the service from
+The `useFirebaseNotifications` hook is exported alongside `FirebaseService` from
 `src/services/firebase.jsx`. It is the recommended integration point for
-dashboard components.
+dashboard components that only need to register the FCM token on mount.
 
 **Signature:**
 
@@ -282,8 +354,8 @@ export default function DashboardTransportista({ datosTransportista }) {
 }
 ```
 
-<Info>
+<Note>
   The hook only initialises Firebase when both `userId` and `userType` are
   truthy. Pass them only after the user has successfully authenticated to avoid
   registering an anonymous FCM token with the backend.
-</Info>
+</Note>

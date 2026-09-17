@@ -19,20 +19,13 @@ RutaMovil uses **STOMP over SockJS** to stream live accident events to connected
 
 ## Dependencies
 
-```json package.json (peer dependencies)
-"@stomp/stompjs": "^7.x",
-"sockjs-client": "^1.x"
+`@stomp/stompjs` and `sockjs-client` are required by
+`src/services/websocketService.jsx` but are **not** included in the project's
+`package.json`. Install them before using the service:
+
+```bash
+npm install @stomp/stompjs sockjs-client
 ```
-
-<Info>
-  `@stomp/stompjs` and `sockjs-client` must be installed separately — they are
-  consumed by `src/services/websocketService.jsx` but are not currently listed
-  in `package.json`. Add them with:
-
-  ```bash
-  npm install @stomp/stompjs sockjs-client
-  ```
-</Info>
 
 ---
 

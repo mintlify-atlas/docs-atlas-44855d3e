@@ -219,11 +219,12 @@ const response = await API.post('/login/login', { correo, contrasena });
 
 ---
 
-## MFA Endpoints
+## MFA Login Endpoints
 
-<Accordion title="POST /mfa/verify-login — Verify TOTP code">
+<Accordion title="POST /mfa/verify-login — Verify TOTP code during login">
   Validates the 6-digit TOTP code entered by the user during the MFA
-  verification screen.
+  verification screen that appears after a login attempt returns
+  `requiresMFA: true`.
 
   ```jsx src/Components/Login.jsx
   const verifyResponse = await API.post("/mfa/verify-login", {
@@ -244,10 +245,19 @@ const response = await API.post('/login/login', { correo, contrasena });
   </ParamField>
 </Accordion>
 
-<Accordion title="GET /mfa/status/:userId — Check MFA status">
-  Returns whether MFA is currently enabled for a given user ID.
+---
 
-  ```jsx
+## MFA Setup Endpoints
+
+These endpoints are used by the `MFASetup` component (`src/Components/MFASetup.jsx`)
+to let users enroll, verify, and disable TOTP two-factor authentication on their
+account.
+
+<Accordion title="GET /mfa/status/:userId — Check MFA status">
+  Returns whether MFA is currently enabled for a given user ID. Called when
+  the MFASetup modal opens to determine which step to display.
+
+  ```jsx src/Components/MFASetup.jsx
   const response = await API.get(`/mfa/status/${userId}`);
   // response.data => { mfaEnabled: true }
   ```
@@ -258,6 +268,67 @@ const response = await API.post('/login/login', { correo, contrasena });
     `true` if the user has completed MFA setup (TOTP secret enrolled);
     `false` otherwise.
   </ResponseField>
+</Accordion>
+
+<Accordion title="POST /mfa/enable/:userId — Generate QR code and backup codes">
+  Generates a TOTP secret, returns a QR code URL for scanning with an
+  authenticator app, and returns backup codes. Called when the user clicks
+  **Habilitar MFA**.
+
+  ```jsx src/Components/MFASetup.jsx
+  const response = await API.post(`/mfa/enable/${userId}`);
+  ```
+
+  **Response:**
+
+  <ResponseField name="qrUrl" type="string">
+    URL of the QR code image to scan with Google Authenticator or any
+    TOTP-compatible app.
+  </ResponseField>
+
+  <ResponseField name="secret" type="string">
+    The base32-encoded TOTP secret for manual entry in an authenticator app.
+  </ResponseField>
+
+  <ResponseField name="backupCodes" type="string[]">
+    Array of one-time backup codes to store securely. These allow account
+    recovery if the authenticator device is lost.
+  </ResponseField>
+</Accordion>
+
+<Accordion title="POST /mfa/verify/:userId — Verify and activate MFA">
+  Verifies the 6-digit TOTP code entered after scanning the QR code, and
+  activates MFA on the account if the code is valid.
+
+  ```jsx src/Components/MFASetup.jsx
+  await API.post(`/mfa/verify/${userId}`, {
+    code: parseInt(verificationCode)
+  });
+  ```
+
+  **Request body:**
+
+  <ParamField body="code" type="number" required>
+    The 6-digit TOTP code from the authenticator app, parsed as an integer.
+  </ParamField>
+</Accordion>
+
+<Accordion title="POST /mfa/disable/:userId — Disable MFA">
+  Disables MFA on the account after confirming with a valid TOTP code. The
+  user is shown a confirmation modal before this call is made.
+
+  ```jsx src/Components/MFASetup.jsx
+  const response = await API.post(`/mfa/disable/${userId}`, {
+    code: parseInt(disableCode)
+  });
+  ```
+
+  **Request body:**
+
+  <ParamField body="code" type="number" required>
+    A valid 6-digit TOTP code from the authenticator app, confirming the
+    user's intent to disable MFA.
+  </ParamField>
 </Accordion>
 
 ---
@@ -328,8 +399,13 @@ authenticated Google account matches an existing backend record.
 
 ## FCM Token Endpoints
 
-Called by `FirebaseService.saveTokenToBackend()` to register a device's FCM
-push token with the backend after login.
+Two different endpoint shapes are used depending on which notification service
+class calls the backend.
+
+### FirebaseService endpoints
+
+Called by `FirebaseService.saveTokenToBackend()` in `src/services/firebase.jsx`.
+The user ID is passed in the **request body** alongside the token.
 
 <Tabs>
   <Tab title="POST /autoridades/fcm-token">
@@ -367,6 +443,78 @@ push token with the backend after login.
 
     <ParamField body="fcmToken" type="string" required>
       The Firebase Cloud Messaging device registration token.
+    </ParamField>
+  </Tab>
+</Tabs>
+
+### FirebaseNotificationService endpoints
+
+Called by `FirebaseNotificationService.registerTokenInBackend()` and
+`unregisterToken()` in `src/services/FirebaseNotificationService.jsx`. The
+user ID is a **path parameter** and only `fcmToken` is sent in the body.
+
+<Tabs>
+  <Tab title="POST /autoridades/:id/fcm-token">
+    Registers or updates the FCM device token for an autoridad. Called by
+    `FirebaseNotificationService` after initialisation.
+
+    ```jsx src/services/FirebaseNotificationService.jsx
+    await API.post(`/autoridades/${this.userId}/fcm-token`, {
+      fcmToken: this.fcmToken
+    });
+    ```
+
+    <ParamField path="id" type="string | number" required>
+      The autoridad's backend user ID, passed as a URL path segment.
+    </ParamField>
+
+    <ParamField body="fcmToken" type="string" required>
+      The Firebase Cloud Messaging device registration token.
+    </ParamField>
+  </Tab>
+
+  <Tab title="POST /transportistas/:id/fcm-token">
+    Registers or updates the FCM device token for a transportista. Called by
+    `FirebaseNotificationService` after initialisation.
+
+    ```jsx src/services/FirebaseNotificationService.jsx
+    await API.post(`/transportistas/${this.userId}/fcm-token`, {
+      fcmToken: this.fcmToken
+    });
+    ```
+
+    <ParamField path="id" type="string | number" required>
+      The transportista's backend user ID, passed as a URL path segment.
+    </ParamField>
+
+    <ParamField body="fcmToken" type="string" required>
+      The Firebase Cloud Messaging device registration token.
+    </ParamField>
+  </Tab>
+
+  <Tab title="DELETE /autoridades/:id/fcm-token">
+    Removes the FCM token for an autoridad. Called by
+    `FirebaseNotificationService.unregisterToken()` on logout.
+
+    ```jsx src/services/FirebaseNotificationService.jsx
+    await API.delete(`/autoridades/${this.userId}/fcm-token`);
+    ```
+
+    <ParamField path="id" type="string | number" required>
+      The autoridad's backend user ID.
+    </ParamField>
+  </Tab>
+
+  <Tab title="DELETE /transportistas/:id/fcm-token">
+    Removes the FCM token for a transportista. Called by
+    `FirebaseNotificationService.unregisterToken()` on logout.
+
+    ```jsx src/services/FirebaseNotificationService.jsx
+    await API.delete(`/transportistas/${this.userId}/fcm-token`);
+    ```
+
+    <ParamField path="id" type="string | number" required>
+      The transportista's backend user ID.
     </ParamField>
   </Tab>
 </Tabs>

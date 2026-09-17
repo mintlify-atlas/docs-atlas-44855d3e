@@ -29,7 +29,7 @@ description: "Full reference for RutaMovil's accident report form, victim and ve
 
 ## Accident Report Form — `Accidentes.jsx`
 
-The `Accidentes` component is a scrollable form rendered inside the `DashboardTransportista`. It receives `idAutoridad` (the logged-in user's ID) and an `onClose` callback.
+The `Accidentes` component is a scrollable form used in both `DashboardAutoridad` and `DashboardTransportista`. It accepts an `idAutoridad` prop (the authority's numeric ID) and an `onClose` callback. When invoked from `DashboardTransportista` the transportista passes their own ID under the `idTransportista` prop name instead, so `idAutoridad` resolves to `undefined` in that path.
 
 <Note>
   Accident photos require explicit runtime permissions. On Android the app requests `CAMERA` permission before opening the camera and `READ_MEDIA_IMAGES` (Android 13+) or `READ_EXTERNAL_STORAGE` (Android ≤12) before opening the gallery. The permission rationale dialogs are shown automatically; if the user denies, an `Alert` instructs them to enable the permission in device settings.
@@ -310,5 +310,5 @@ Transportistas can track the approval status of every report they have submitted
 | `PUT` | `/accidentes/completar/{id}` | Fill missing victims/vehicles |
 
 <Warning>
-  The `POST /accidentes/crearAccidente` payload requires `idAutoridad` to be the numeric ID of the logged-in transportista user (confusingly named "Autoridad" in the transport authority context — this field identifies the submitting user, not the reviewing authority). Submitting without a valid `idAutoridad` will result in a server-side error.
+  The `POST /accidentes/crearAccidente` payload requires `idAutoridad` to be the numeric ID of the authenticated authority (`datosAutoridad.idAutoridad`). This is the field passed from `DashboardAutoridad` to the `Accidentes` component and identifies the authority who is filing the report. Submitting without a valid `idAutoridad` will result in a server-side error. Note that when `Accidentes` is opened from `DashboardTransportista`, the transportista's ID is passed under the prop name `idTransportista` (a different key), so `idAutoridad` will be `undefined` in that context — ensure the correct prop name is used for each dashboard.
 </Warning>

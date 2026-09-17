@@ -88,7 +88,7 @@ The `usePlacesSearch` hook wraps the Google Places Autocomplete API to provide r
 
 <Tabs>
   <Tab title="Autocomplete Flow">
-    When the user types at least one character in the search `TextInput`, `setMostrarSugerencias(true)` is called and the hook fires an Autocomplete request using `GOOGLE_MAPS_APIKEY`. Each result exposes `structured_formatting.main_text` (the place name) and `structured_formatting.secondary_text` (the secondary descriptor — city, country).
+    When the user types in the search `TextInput`, `setMostrarSugerencias(true)` is called as soon as the input has at least 1 character. However, the hook only fires the Places Autocomplete API request once `busqueda.length >= 3`, keeping network calls to a minimum. Each result exposes `structured_formatting.main_text` (the place name) and `structured_formatting.secondary_text` (the secondary descriptor — city, country).
 
     ```jsx
     // MapaRutas.jsx — autocomplete suggestion rendering
@@ -165,6 +165,28 @@ const GOOGLE_MAPS_APIKEY = 'AIzaSyC7Rm9KVUTqX3IraanKcv9BiFzJRxIcXeA';
 ```
 
 The `onRutaCalculada` callback, provided by `useNavigation`, receives the full route response and populates `infoRuta` (distance in km and duration in minutes) and the `pasos` array for turn-by-turn instructions.
+
+### `useNavigation` Return Values
+
+The hook exposes the following values and callbacks:
+
+```jsx
+// src/Hooks/useNavigation.jsx — return object
+return {
+  infoRuta,                  // { distancia: string (km), duracion: number (min) } | null
+  siguiendoRuta,             // boolean — true while active navigation is running
+  vozActivada,               // boolean — whether voice turn-by-turn guidance is on
+  setVozActivada,            // setState setter to toggle voice guidance
+  pasos,                     // Array of step objects from the Directions API
+  pasoActual,                // number — index of the current active step
+  distanciaAlProximoPaso,    // number (metres) | null — distance to the next manoeuvre
+  mensajeVoz,                // string — last spoken instruction (cleared after 5 seconds)
+  iniciarSeguimientoRuta,    // (ubicacionInicial) => void — starts GPS watch and navigation
+  detenerSeguimientoRuta,    // () => void — stops GPS watch and resets voice state
+  limpiarNavegacion,         // () => void — full reset: clears route info and steps
+  onRutaCalculada,           // (result) => void — callback for MapViewDirections onReady
+};
+```
 
 ### Route Info Display
 

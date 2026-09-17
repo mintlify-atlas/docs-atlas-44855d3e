@@ -1,5 +1,5 @@
 ---
-title: "Sign In with Google in RutaMovil"
+title: "Google Sign-In Integration for RutaMovil Authentication"
 sidebarTitle: "Google Sign-In"
 description: "Learn how RutaMovil uses Google Sign-In and Firebase Auth to authenticate Transportistas and Autoridades, resolve roles, and handle MFA via OAuth 2.0."
 ---
@@ -298,7 +298,6 @@ const handleGoogleLogin = async () => {
     }
 
     showToast(errorMessage, "error");
-  } finally {
     setLoading(false);
   }
 };
