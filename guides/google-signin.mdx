@@ -1,0 +1,305 @@
+---
+title: "Sign In with Google in RutaMovil"
+sidebarTitle: "Google Sign-In"
+description: "Learn how RutaMovil uses Google Sign-In and Firebase Auth to authenticate Transportistas and Autoridades, resolve roles, and handle MFA via OAuth 2.0."
+---
+
+RutaMovil supports Google Sign-In as a first-class authentication method for both `autoridad` and `transportista` users. Under the hood, the app uses the `@react-native-google-signin/google-signin` library to obtain a Google ID token, exchanges it for a Firebase credential, and then queries the RutaMovil REST API to determine whether the Google account is already registered and what role it holds. New users are shown a role-selection screen to complete their registration.
+
+<Warning>
+  Your `google-services.json` file must contain a `client_id` that exactly matches the `webClientId` used in `GoogleSignin.configure()`. A mismatch will cause error code `10` — a configuration error — before any sign-in dialog appears. Regenerate `google-services.json` from the Firebase console if you change the OAuth 2.0 client.
+</Warning>
+
+---
+
+## Configuration
+
+Google Sign-In is configured once when the `Login` component mounts, inside a `useEffect` that calls `configureGoogleSignIn`:
+
+```jsx
+// From Login.jsx — configureGoogleSignIn
+const configureGoogleSignIn = () => {
+  try {
+    GoogleSignin.configure({
+      webClientId: '267093356780-61j6l12lhevi4a14q7aihook3bna9i64.apps.googleusercontent.com',
+      offlineAccess: true,
+      forceCodeForRefreshToken: true,
+    });
+    console.log('✅ Google SignIn configurado correctamente');
+  } catch (error) {
+    console.error('❌ Error configurando Google SignIn:', error);
+  }
+};
+
+useEffect(() => {
+  configureGoogleSignIn();
+}, []);
+```
+
+<ParamField body="webClientId" type="string" required>
+  The OAuth 2.0 Web Client ID from your Firebase project. Found under **Firebase Console → Project Settings → Google Sign-In → Web client**. Must match the `client_id` in `google-services.json`.
+</ParamField>
+
+<ParamField body="offlineAccess" type="boolean">
+  When `true`, Google returns a server auth code alongside the ID token, allowing your backend to obtain a refresh token for offline access.
+</ParamField>
+
+<ParamField body="forceCodeForRefreshToken" type="boolean">
+  Forces a new auth code on every sign-in, ensuring a fresh refresh token is always available even when the user has previously authorized the app.
+</ParamField>
+
+---
+
+## Sign-In Flow
+
+<Steps>
+  <Step title="Check Google Play Services">
+    The flow starts by verifying that Google Play Services is available and up to date on the device. If not, the system prompts the user to update:
+
+    ```jsx
+    await GoogleSignin.hasPlayServices({
+      showPlayServicesUpdateDialog: true
+    });
+    ```
+  </Step>
+
+  <Step title="Clear Previous Session">
+    Before opening the account picker, any prior Google session is explicitly signed out. This ensures the account chooser dialog always appears, preventing silent re-authentication with a stale session:
+
+    ```jsx
+    await GoogleSignin.signOut();
+    ```
+  </Step>
+
+  <Step title="Open the Google Account Picker">
+    `GoogleSignin.signIn()` opens the native account selection sheet. The returned object contains the Google user info and the critical `idToken`:
+
+    ```jsx
+    const userInfo = await GoogleSignin.signIn();
+
+    const googleUser = userInfo.data?.user || userInfo.user || userInfo;
+    const idToken = userInfo.data?.idToken || userInfo.idToken;
+
+    if (!idToken) {
+      throw new Error('No se pudo obtener el ID Token de Google');
+    }
+    ```
+
+    <Tip>
+      The SDK may return the token at different paths depending on the library version. RutaMovil checks both `userInfo.data?.idToken` and `userInfo.idToken` to stay compatible across minor library updates.
+    </Tip>
+  </Step>
+
+  <Step title="Exchange Token with Firebase">
+    The Google ID token is wrapped in a Firebase `GoogleAuthProvider` credential and used to authenticate with Firebase Auth:
+
+    ```jsx
+    const googleCredential = GoogleAuthProvider.credential(idToken);
+    const userCredential = await signInWithCredential(auth, googleCredential);
+    ```
+
+    `userCredential.user.email` is the canonical email address used for all subsequent backend lookups.
+  </Step>
+
+  <Step title="Check Backend Registration">
+    After Firebase authentication succeeds, the app queries both role endpoints to determine whether the Google account already has a RutaMovil profile:
+
+    ```jsx
+    // From verificarUsuarioRegistrado in Login.jsx
+    const responseAutoridades = await API.get('/autoridades');
+    const autoridades = responseAutoridades.data || [];
+    const autoridadEncontrada = autoridades.find(
+      a => a.usuario?.correo?.toLowerCase() === email.toLowerCase()
+    );
+
+    if (autoridadEncontrada) {
+      return { existe: true, rol: 'autoridad', datos: autoridadEncontrada };
+    }
+
+    const responseTransportistas = await API.get('/transportistas');
+    const transportistas = responseTransportistas.data || [];
+    const transportistaEncontrado = transportistas.find(
+      t => t.usuario?.correo?.toLowerCase() === email.toLowerCase()
+    );
+
+    if (transportistaEncontrado) {
+      return { existe: true, rol: 'transportista', datos: transportistaEncontrado };
+    }
+
+    return { existe: false, rol: null, datos: null };
+    ```
+
+    The email comparison is case-insensitive on both sides to avoid missed matches from capitalization differences.
+  </Step>
+
+  <Step title="Existing User — Google Login Endpoint & MFA Check">
+    For users already registered in the backend, the app calls the dedicated Google login endpoint, which applies the same MFA gate as the email/password flow:
+
+    ```jsx
+    const loginResponse = await API.post("/login/google-login", {
+      email: userCredential.user.email,
+      userType: usuario.rol  // "autoridad" or "transportista"
+    });
+
+    if (loginResponse.data.requiresMFA) {
+      setMfaEmail(userCredential.user.email);
+      setMfaUserType(usuario.rol);
+      setShowMFAVerification(true);
+      setLoading(false);
+      return;
+    }
+    ```
+
+    **Endpoint:** `POST /login/google-login`
+
+    <ParamField body="email" type="string" required>
+      The email from `userCredential.user.email` — the address verified by Google and Firebase.
+    </ParamField>
+
+    <ParamField body="userType" type="string" required>
+      Either `"autoridad"` or `"transportista"`, determined by the backend registration check in Step 5.
+    </ParamField>
+
+    <ResponseField name="requiresMFA" type="boolean">
+      When `true`, the user has TOTP enabled. The app stores `mfaEmail` and `mfaUserType`, then shows the MFA verification screen. See the [Authentication guide](/guides/authentication) for the MFA completion flow.
+    </ResponseField>
+
+    When `requiresMFA` is `false`, the app extracts `usuario.id` from the cached profile data and routes directly to the appropriate dashboard.
+  </Step>
+
+  <Step title="New User — Role Selection">
+    When `verificarUsuarioRegistrado` returns `{ existe: false }`, the account has no RutaMovil profile yet. The app shows the `RoleSelection` component where the user picks `autoridad` or `transportista` and completes registration:
+
+    ```jsx
+    setGoogleUserData({
+      uid: userCredential.user.uid,
+      email: userCredential.user.email,
+      displayName: userCredential.user.displayName,
+      photoURL: userCredential.user.photoURL,
+      phoneNumber: userCredential.user.phoneNumber,
+    });
+
+    setShowRoleSelection(true);
+    ```
+
+    Once role selection is complete, `handleRoleSelectionComplete` calls `verificarUsuarioRegistrado` again to fetch the newly created profile, then routes to the correct dashboard.
+  </Step>
+</Steps>
+
+---
+
+## Error Handling
+
+The `handleGoogleLogin` function maps Google Sign-In error codes to user-friendly messages displayed via the in-app toast system:
+
+```jsx
+} catch (error) {
+  let errorMessage = "No se pudo iniciar sesión con Google";
+
+  if (error.code === '10') {
+    errorMessage = "Error de configuración de Google Sign-In";
+  } else if (error.code === '12501') {
+    errorMessage = "Inicio de sesión cancelado";
+  } else if (error.code === '7') {
+    errorMessage = "Error de red. Verifica tu conexión";
+  }
+
+  showToast(errorMessage, "error");
+  setLoading(false);
+}
+```
+
+<CardGroup cols={3}>
+  <Card title="Code 10" icon="triangle-exclamation">
+    **Configuration error.** The `webClientId` in `GoogleSignin.configure()` does not match the `client_id` in `google-services.json`. Regenerate the file from the Firebase console.
+  </Card>
+  <Card title="Code 12501" icon="circle-xmark">
+    **User cancelled.** The user dismissed the Google account picker without selecting an account. No action required — the loading state is reset.
+  </Card>
+  <Card title="Code 7" icon="wifi">
+    **Network error.** The device cannot reach Google's authentication servers. Check internet connectivity and try again.
+  </Card>
+</CardGroup>
+
+---
+
+## Full `handleGoogleLogin` Reference
+
+```jsx
+// From Login.jsx — handleGoogleLogin
+const handleGoogleLogin = async () => {
+  setLoading(true);
+
+  try {
+    await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+    await GoogleSignin.signOut();
+
+    const userInfo = await GoogleSignin.signIn();
+    const googleUser = userInfo.data?.user || userInfo.user || userInfo;
+    const idToken = userInfo.data?.idToken || userInfo.idToken;
+
+    if (!idToken) {
+      throw new Error('No se pudo obtener el ID Token de Google');
+    }
+
+    const googleCredential = GoogleAuthProvider.credential(idToken);
+    const userCredential = await signInWithCredential(auth, googleCredential);
+
+    const usuario = await verificarUsuarioRegistrado(userCredential.user.email);
+
+    if (usuario.existe) {
+      const loginResponse = await API.post("/login/google-login", {
+        email: userCredential.user.email,
+        userType: usuario.rol
+      });
+
+      if (loginResponse.data.requiresMFA) {
+        setMfaEmail(userCredential.user.email);
+        setMfaUserType(usuario.rol);
+        setShowMFAVerification(true);
+        setLoading(false);
+        return;
+      }
+
+      const userId = usuario.datos?.usuario?.id;
+      setCurrentUserData({
+        user: userCredential.user,
+        rol: usuario.rol,
+        datos: { ...usuario.datos, userId }
+      });
+
+      if (usuario.rol === 'autoridad') setShowDashboardAutoridad(true);
+      else if (usuario.rol === 'transportista') setShowDashboardTransportista(true);
+
+      if (onLoginSuccess) {
+        onLoginSuccess({ user: userCredential.user, rol: usuario.rol, datos: { ...usuario.datos, userId } });
+      }
+
+    } else {
+      setGoogleUserData({
+        uid: userCredential.user.uid,
+        email: userCredential.user.email,
+        displayName: userCredential.user.displayName,
+        photoURL: userCredential.user.photoURL,
+        phoneNumber: userCredential.user.phoneNumber,
+      });
+      setShowRoleSelection(true);
+    }
+
+  } catch (error) {
+    let errorMessage = "No se pudo iniciar sesión con Google";
+
+    if (error.code === '10') {
+      errorMessage = "Error de configuración de Google Sign-In";
+    } else if (error.code === '12501') {
+      errorMessage = "Inicio de sesión cancelado";
+    } else if (error.code === '7') {
+      errorMessage = "Error de red. Verifica tu conexión";
+    }
+
+    showToast(errorMessage, "error");
+  } finally {
+    setLoading(false);
+  }
+};
+```

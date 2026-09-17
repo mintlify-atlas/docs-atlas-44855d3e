@@ -1,0 +1,320 @@
+---
+title: "Autoridad Role: Traffic Authority Dashboard"
+sidebarTitle: "Autoridad"
+description: "Guide to the Autoridad role in RutaMovil — covering authentication, accident approval workflows, statistical reports, real-time map, and push notifications."
+---
+
+The **Autoridad** (traffic authority) role is the review and oversight layer of RutaMovil / Sicher. Traffic authority users receive real-time push notifications when drivers submit accident reports, approve or reject those reports, supplement them with victim and vehicle data, and analyze accident trends through date-ranged statistical dashboards — all within a purpose-built mobile interface.
+
+## Authentication
+
+Autoridades sign in through the main login screen using either email/password or Google Sign-In. Credentials are validated against the `POST /login/login` endpoint, which returns `userData` (Firebase user) and `datosAutoridad` (backend entity including `idAutoridad`).
+
+<Tabs>
+  <Tab title="Email / Password">
+    Standard Firebase Auth login posting to:
+
+    ```
+    POST /login/login
+    ```
+
+    On success, `datosAutoridad` (containing `idAutoridad`) hydrates the dashboard.
+  </Tab>
+  <Tab title="Google Sign-In">
+    Launches the Google Sign-In OAuth flow. After the ID token is exchanged with Firebase, the same `POST /login/login` endpoint resolves the backend authority entity.
+  </Tab>
+</Tabs>
+
+<Note>
+  On dashboard mount, Firebase Cloud Messaging is initialized with `firebaseNotificationService.initialize(idAutoridad, 'autoridad')` so the authority receives real-time push alerts for new accident reports. The FCM token is unregistered on logout.
+</Note>
+
+---
+
+## Dashboard Overview
+
+`DashboardAutoridad` renders a persistent five-tab bottom navigation bar. The active tab is controlled by `tabActiva` state; a floating center button opens the accident reporting modal for authorities who also need to file reports.
+
+```jsx
+// DashboardAutoridad.jsx — tab state
+const [tabActiva, setTabActiva] = useState('inicio');
+```
+
+<CardGroup cols={2}>
+  <Card title="🏠 Inicio" icon="house">
+    Welcome panel with authority summary stats (`InicioAutoridad`).
+  </Card>
+  <Card title="📊 Reportes" icon="chart-bar">
+    Date-ranged accident statistics and chart views (`Reportes`).
+  </Card>
+  <Card title="⚠️ Accidentes" icon="triangle-exclamation">
+    Floating center button — opens the `Accidentes` report form modal.
+  </Card>
+  <Card title="🗺️ Mapa" icon="map">
+    Logged-in route layer map (`Maparutaslogueado`).
+  </Card>
+  <Card title="✅ Aprobar" icon="circle-check">
+    Incident approval workflow (`AprobarAccidentes`).
+  </Card>
+</CardGroup>
+
+---
+
+## Tab: Inicio — `InicioAutoridad`
+
+The home tab displays a summary panel for the authenticated authority, using `userData` and `datosAutoridad` props:
+
+```jsx
+{tabActiva === 'inicio' && (
+  <InicioAutoridad
+    userData={userData}
+    datosAutoridad={datosAutoridad}
+  />
+)}
+```
+
+---
+
+## Tab: Mapa — `Maparutaslogueado`
+
+The map tab renders `Maparutaslogueado` (imported as `MapaRutas`), which displays an interactive map layer that includes logged-in route data visible to the authority:
+
+```jsx
+{tabActiva === 'mapa' && (
+  <View style={styles.mapaContainer}>
+    <MapaRutas
+      userData={userData}
+      datosAutoridad={datosAutoridad}
+    />
+  </View>
+)}
+```
+
+---
+
+## Tab: Reportes — Accident Statistics
+
+The **Reportes** tab renders the `Reportes` component, which provides a full accident analytics dashboard for a configurable date range.
+
+### Generating a Report
+
+<Steps>
+  <Step title="Select a date range">
+    Use the native `DateTimePicker` controls (spinner on iOS, default on Android) to set **Fecha Inicio** and **Fecha Fin`. The component defaults to the last 30 days on first load.
+  </Step>
+  <Step title="Tap Generar Reporte">
+    Issues a `GET /reportes/accidentes` request with query parameters:
+
+    ```jsx
+    // Reportes.jsx
+    const response = await API.get('/reportes/accidentes', {
+      params: {
+        fechaInicio: formatearFechaInput(fechaInicio),
+        fechaFin: formatearFechaInput(fechaFin)
+      }
+    });
+    ```
+  </Step>
+  <Step title="Browse chart views">
+    Switch between visualization modes using the horizontal chip selector.
+  </Step>
+</Steps>
+
+### Chart Modes (`tipoGrafico`)
+
+| Key           | Visualization                                      |
+|---------------|----------------------------------------------------|
+| `general`     | Combined overview: monthly trend, type bars, state distribution, top locations |
+| `mensual`     | Monthly trend line chart (`LineaGrafico`)          |
+| `tipos`       | Bar chart by accident type (`datosReporte.porTipo`) |
+| `estado`      | Status distribution legend (`datosReporte.porEstado`) |
+| `horario`     | Hourly bar chart (`datosReporte.porHora`)          |
+| `semanal`     | Day-of-week bar chart (`datosReporte.porDiaSemana`) |
+| `ubicaciones` | Top 5 critical locations ranked list               |
+| `vehiculos`   | Vehicle type bars + top 5 makes (`topMarcas`)      |
+| `victimas`    | Victims by gender, age range, and condition totals |
+
+```jsx
+// Reportes.jsx — chart mode selector
+const tiposGrafico = [
+  { key: 'general', icon: '📊', label: 'General' },
+  { key: 'mensual', icon: '📅', label: 'Por Mes' },
+  { key: 'tipos',   icon: '📋', label: 'Por Tipo' },
+  { key: 'estado',  icon: '⚠️', label: 'Estados' },
+  { key: 'horario', icon: '🕐', label: 'Por Hora' },
+  { key: 'semanal', icon: '📆', label: 'Por Día' },
+  { key: 'ubicaciones', icon: '📍', label: 'Ubicaciones' },
+  { key: 'vehiculos',   icon: '🚗', label: 'Vehículos' },
+  { key: 'victimas',    icon: '👥', label: 'Víctimas' }
+];
+```
+
+### Summary Statistics
+
+When report data is available, an executive summary card shows:
+
+- **Total Accidentes** — `datosReporte.total`
+- **Víctimas** — `datosReporte.totalVictimas`
+- **Vehículos** — `datosReporte.totalVehiculos`
+- **Promedio diario** — `datosReporte.promedioDiario`
+
+---
+
+## Tab: Aprobar Accidentes — `AprobarAccidentes`
+
+The approval tab is the core moderation interface for authorities. It loads all transportista-submitted accident reports from `GET /accidentes/listar-transportistas` and allows the authority to filter, review, and take action on each one.
+
+```jsx
+// AprobarAccidentes.jsx
+const cargarAccidentes = async () => {
+  const response = await API.get('/accidentes/listar-transportistas');
+  setAccidentes(response.data);
+};
+```
+
+### Status Filter
+
+A horizontal chip bar lets the authority filter by approval state:
+
+| Filter value | Matches                          |
+|--------------|----------------------------------|
+| `TODOS`      | All records                      |
+| `PENDIENTE`  | `aprobado === null`              |
+| `APROBADO`   | `aprobado === true`              |
+| `RECHAZADO`  | `aprobado === false`             |
+
+### Date Range Filter
+
+A collapsible date filter panel includes quick-select buttons for **Hoy**, **Última semana**, and **Último mes**, or manual `YYYY-MM-DD` text inputs:
+
+```jsx
+// AprobarAccidentes.jsx — date filter
+if (fechaInicio) {
+  const inicio = new Date(fechaInicio);
+  inicio.setHours(0, 0, 0, 0);
+  if (fechaAccidente < inicio) return false;
+}
+if (fechaFin) {
+  const fin = new Date(fechaFin);
+  fin.setHours(23, 59, 59, 999);
+  if (fechaAccidente > fin) return false;
+}
+```
+
+### Approving and Rejecting
+
+Pending reports (`aprobado === null`) show **Aprobar** and **Rechazar** action buttons. Each triggers a confirmation alert before calling the backend:
+
+```jsx
+// AprobarAccidentes.jsx
+const procesarAccidente = async (id, aprobado) => {
+  await API.post(`/accidentes/aprobar/${id}`, { aprobado });
+};
+```
+
+### Completing Missing Data
+
+When a report is flagged as `⚠️ INCOMPLETO` (missing victim or vehicle records), the authority can open the **Completar datos faltantes** modal to add the information before approval:
+
+```jsx
+// AprobarAccidentes.jsx — save completed data
+await API.put(`/accidentes/completar/${modalCompletarDatos.id}`, payload);
+```
+
+<Accordion title="Victim fields (Víctimas)">
+  | Field       | Type    | Required |
+  |-------------|---------|----------|
+  | `nombre`    | string  | ✅       |
+  | `apellido`  | string  | ✅       |
+  | `cedula`    | string  | ✅       |
+  | `edad`      | integer | ✅       |
+  | `genero`    | enum    | Masculino / Femenino |
+  | `condicion` | enum    | Ileso / Herido leve / Herido / Herido grave / Fallecido |
+</Accordion>
+
+<Accordion title="Vehicle fields (Vehículos)">
+  | Field      | Type    | Required |
+  |------------|---------|----------|
+  | `placa`    | string  | ✅       |
+  | `marca`    | string  | ✅       |
+  | `modelo`   | string  | ✅       |
+  | `anio`     | integer | ✅       |
+  | `color`    | string  | ✅       |
+  | `npuertas` | integer | Default: 4 |
+  | `capacidad`| float   | Optional |
+</Accordion>
+
+### Detail View & Photo
+
+Each accident card includes a **"Ver todos los detalles →"** button that opens a bottom-sheet modal with the full incident record — including transportista name/cédula, address, victim list, and a tappable accident photo that can be expanded full-screen.
+
+---
+
+## Notifications — `NotificacionesAutoridad`
+
+Tapping the 🔔 bell icon opens a full-screen modal with `NotificacionesAutoridad`, scoped to the authority's ID:
+
+```jsx
+{mostrarNotificaciones && (
+  <Modal visible={true} animationType="slide">
+    <NotificacionesAutoridad
+      autoridadId={datosAutoridad?.idAutoridad}
+    />
+  </Modal>
+)}
+```
+
+Real-time push alerts are delivered via FCM whenever a new accident report is submitted, ensuring authorities can respond promptly.
+
+---
+
+## Profile & Security
+
+The ⋮ dropdown menu in the header provides two account options:
+
+<Steps>
+  <Step title="Ver Perfil">
+    Opens `PerfilAutoridadModal` (imported as `PerfilAutoridadModal` from `./Perfil`), which allows the authority to view and edit their profile:
+
+    ```jsx
+    <PerfilAutoridadModal
+      visible={showPerfilModal}
+      autoridadId={datosAutoridad?.idAutoridad}
+      onClose={() => setShowPerfilModal(false)}
+    />
+    ```
+  </Step>
+  <Step title="Configuración de Seguridad">
+    Opens `MFASetup` for TOTP multi-factor authentication enrollment:
+
+    ```jsx
+    <MFASetup
+      visible={showMFASetup}
+      userId={datosAutoridad?.userId || datosAutoridad?.usuario?.idusuario}
+      userEmail={userData?.email || datosAutoridad?.usuario?.correo}
+      onClose={() => setShowMFASetup(false)}
+    />
+    ```
+
+    See [MFA Setup](/guides/mfa-setup) for enrollment details.
+  </Step>
+</Steps>
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Accident Reporting" icon="triangle-exclamation" href="/features/accident-reporting">
+    Detailed breakdown of the accident report form and submission flow.
+  </Card>
+  <Card title="Real-Time Notifications" icon="bell" href="/features/real-time-notifications">
+    FCM push notification setup, delivery, and notification center details.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/guides/authentication">
+    Login flows, Google Sign-In, Firebase Auth, and session management.
+  </Card>
+  <Card title="MFA Setup" icon="shield-halved" href="/guides/mfa-setup">
+    Step-by-step TOTP multi-factor authentication enrollment guide.
+  </Card>
+</CardGroup>

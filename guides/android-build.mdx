@@ -1,0 +1,308 @@
+---
+title: "Build and Run RutaMovil on Android"
+sidebarTitle: "Android Build"
+description: "Configure Android Studio, place google-services.json, run the debug build, and produce a release APK or AAB for the RutaMovil app."
+---
+
+RutaMovil targets the Android platform through a standard React Native Gradle build. This guide walks you through every step required to get the app running on an Android emulator or physical device — including Firebase configuration, network security policy, release signing, and ProGuard — so you can confidently ship both debug and production builds.
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Android Studio" icon="android">
+    Latest stable release with the Android SDK installed. Used for the emulator, SDK Manager, and AVD Manager.
+  </Card>
+  <Card title="Android SDK — API 33+" icon="layers">
+    The project `compileSdkVersion` is **36** and `minSdkVersion` is **24**. Install at least API 33 via the SDK Manager in Android Studio.
+  </Card>
+  <Card title="ANDROID_HOME" icon="terminal">
+    Set this environment variable to your SDK root (e.g. `~/Library/Android/sdk`). Add `$ANDROID_HOME/platform-tools` to your `PATH`.
+  </Card>
+  <Card title="JDK 17+" icon="java">
+    Gradle requires JDK 17 or later. Android Studio ships a bundled JDK; verify with `java -version`.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Run `npx react-native doctor` from the project root at any time to get an automated checklist of your Android environment — it checks for Android Studio, SDK, emulator images, and `ANDROID_HOME`.
+</Tip>
+
+---
+
+## Firebase Android Setup
+
+RutaMovil uses `@react-native-firebase/app`, `@react-native-firebase/auth`, and `@react-native-firebase/messaging`. These modules require a native configuration file.
+
+<Warning>
+  Without `google-services.json` placed at `android/app/google-services.json`, the Gradle build will **fail at compile time** with a missing-resource error. This file is intentionally excluded from version control (`.gitignore`). You must obtain it from the Firebase console.
+</Warning>
+
+<Steps>
+  <Step title="Open the Firebase console">
+    Go to [console.firebase.google.com](https://console.firebase.google.com) and select the RutaMovil project.
+  </Step>
+  <Step title="Download google-services.json">
+    Navigate to **Project Settings → General**, scroll to *Your apps*, and click **Download google-services.json** under the Android app entry.
+  </Step>
+  <Step title="Place the file">
+    Copy the downloaded file into:
+
+    ```
+    android/app/google-services.json
+    ```
+  </Step>
+</Steps>
+
+The `google-services` Gradle plugin reads this file during the build and generates the required Firebase resource classes. It is applied at the bottom of `android/app/build.gradle`:
+
+```groovy android/app/build.gradle
+// 🔥 GOOGLE SERVICES PLUGIN AL FINAL
+apply plugin: 'com.google.gms.google-services'
+```
+
+---
+
+## Gradle Build Configuration
+
+The root `android/build.gradle` sets SDK versions for the entire project. The following values are defined in the `ext` block:
+
+```groovy android/build.gradle (ext block)
+ext {
+    buildToolsVersion = "36.0.0"
+    minSdkVersion = 24
+    compileSdkVersion = 36
+    targetSdkVersion = 36
+    ndkVersion = "27.1.12297006"
+    kotlinVersion = "2.1.20"
+}
+```
+
+The app-level `android/app/build.gradle` declares the application ID, versioning, signing configs, and Firebase dependencies:
+
+```groovy android/app/build.gradle
+apply plugin: "com.android.application"
+apply plugin: "org.jetbrains.kotlin.android"
+apply plugin: "com.facebook.react"
+apply from: "../../node_modules/react-native-vector-icons/fonts.gradle"
+
+react {
+    autolinkLibrariesWithApp()
+}
+
+def enableProguardInReleaseBuilds = false
+def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
+
+android {
+    ndkVersion rootProject.ext.ndkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+    compileSdk rootProject.ext.compileSdkVersion
+
+    namespace "com.ruta"
+
+    defaultConfig {
+        applicationId "com.ruta"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        multiDexEnabled true
+    }
+
+    signingConfigs {
+        release {
+            if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
+                storeFile file(MYAPP_UPLOAD_STORE_FILE)
+                storePassword MYAPP_UPLOAD_STORE_PASSWORD
+                keyAlias MYAPP_UPLOAD_KEY_ALIAS
+                keyPassword MYAPP_UPLOAD_KEY_PASSWORD
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Usa el keystore de debug por defecto de Android
+        }
+        release {
+            if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled enableProguardInReleaseBuilds
+            proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+        }
+    }
+}
+
+dependencies {
+    implementation("com.facebook.react:react-android")
+
+    // 🔥 FIREBASE HABILITADO
+    implementation platform('com.google.firebase:firebase-bom:33.7.0')
+    implementation 'com.google.firebase:firebase-messaging'
+    implementation 'com.google.firebase:firebase-analytics'
+
+    implementation 'com.google.android.gms:play-services-maps:18.1.0'
+    implementation 'com.google.android.gms:play-services-location:21.0.1'
+
+    implementation 'androidx.multidex:multidex:2.0.1'
+}
+
+// 🔥 GOOGLE SERVICES PLUGIN AL FINAL
+apply plugin: 'com.google.gms.google-services'
+```
+
+<Info>
+  The application ID is **`com.ruta`**. This must match the package name registered in the Firebase console for `google-services.json` to be accepted.
+</Info>
+
+---
+
+## Network Security Configuration
+
+RutaMovil communicates with its Spring Boot backend at `https://backend-spring-527951342134.us-central1.run.app`. The network security config explicitly trusts this domain and permits cleartext traffic for local development:
+
+```xml android/app/src/main/res/xml/network_security_config.xml
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">
+            backend-spring-527951342134.us-central1.run.app
+        </domain>
+    </domain-config>
+</network-security-config>
+```
+
+This file is referenced in `AndroidManifest.xml` via `android:networkSecurityConfig="@xml/network_security_config"`.
+
+---
+
+## Android Permissions
+
+The following permissions are declared in `AndroidManifest.xml`. They directly support the app's accident-reporting, map, and notification features:
+
+```xml android/app/src/main/AndroidManifest.xml (uses-permission block)
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+<uses-permission android:name="android.permission.CAMERA" />
+<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+<uses-permission android:name="android.permission.VIBRATE" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+```
+
+<Accordion title="Permission reference">
+
+| Permission | Feature |
+|-----------|---------|
+| `INTERNET` | All API calls, WebSocket, Firebase |
+| `ACCESS_FINE_LOCATION` / `ACCESS_COARSE_LOCATION` | Real-time GPS tracking on the map |
+| `CAMERA` | Photo capture for accident reports |
+| `READ_MEDIA_IMAGES` | Selecting existing photos from gallery |
+| `POST_NOTIFICATIONS` | FCM push notifications for accident alerts |
+| `RECORD_AUDIO` | Expo Speech / voice features |
+| `VIBRATE` | In-app alert haptics |
+
+</Accordion>
+
+---
+
+## Running in Development
+
+<Steps>
+  <Step title="Start an emulator or connect a device">
+    Open Android Studio → **Device Manager** and launch a virtual device running API 33 or higher. Alternatively, connect a physical Android device with USB debugging enabled.
+  </Step>
+
+  <Step title="Verify ADB detects the device">
+    ```bash
+    adb devices
+    ```
+
+    You should see your device or emulator listed as `device`.
+  </Step>
+
+  <Step title="Run the app">
+    From the project root:
+
+    ```bash
+    npm run android
+    ```
+
+    This command is an alias for `react-native run-android`. It starts Metro (if not already running) and builds a debug APK, then installs and launches it on the connected device.
+  </Step>
+</Steps>
+
+<Note>
+  If Metro is already running in a separate terminal (`npm start`), `npm run android` will connect to that instance automatically rather than launching a new one.
+</Note>
+
+---
+
+## Building a Release APK / AAB
+
+Use the Gradle wrapper inside the `android/` directory to produce release artifacts. Never use a globally-installed `gradle` — always use `./gradlew` to ensure the correct Gradle version is used.
+
+<Tabs>
+  <Tab title="Release APK">
+    ```bash
+    cd android
+    ./gradlew assembleRelease
+    ```
+
+    Output: `android/app/build/outputs/apk/release/app-release.apk`
+  </Tab>
+  <Tab title="Release AAB (Play Store)">
+    ```bash
+    cd android
+    ./gradlew bundleRelease
+    ```
+
+    Output: `android/app/build/outputs/bundle/release/app-release.aab`
+  </Tab>
+</Tabs>
+
+### Release Signing
+
+The signing config in `build.gradle` reads four Gradle properties from `~/.gradle/gradle.properties` (your machine-local file, not the repo):
+
+```properties ~/.gradle/gradle.properties
+MYAPP_UPLOAD_STORE_FILE=my-release-key.keystore
+MYAPP_UPLOAD_STORE_PASSWORD=your_store_password
+MYAPP_UPLOAD_KEY_ALIAS=my-key-alias
+MYAPP_UPLOAD_KEY_PASSWORD=your_key_password
+```
+
+If these properties are absent, the release build will be unsigned and cannot be submitted to the Play Store.
+
+### ProGuard
+
+`android/app/proguard-rules.pro` exists in the project for release build code shrinking. In the current configuration `enableProguardInReleaseBuilds` is set to `false` in `build.gradle`. Enable it for production Play Store submissions to reduce APK size and obfuscate the code:
+
+```groovy android/app/build.gradle
+def enableProguardInReleaseBuilds = true   // change false → true for production
+```
+
+---
+
+## Gradle Wrapper
+
+Always use the Gradle wrapper to build the project. It guarantees the correct Gradle version regardless of what is installed on the system:
+
+```bash
+# From the android/ directory
+./gradlew --version      # confirm Gradle version
+./gradlew assembleDebug  # build debug APK
+./gradlew clean          # clean build outputs
+```
+
+On Windows, use `gradlew.bat` instead of `./gradlew`.

@@ -1,0 +1,314 @@
+---
+title: "Accident Reporting and Approval Workflow"
+sidebarTitle: "Accident Reporting"
+description: "Full reference for RutaMovil's accident report form, victim and vehicle sub-forms, validation utilities, and the authority approval and rejection workflow."
+---
+
+**RutaMovil** (Sicher) provides a structured, end-to-end accident management pipeline: transportistas submit a detailed report through the `Accidentes` screen, autoridades review and act on reports via `AprobarAccidentes`, and the outcome is pushed back to the transportista in real time. This page documents every component, validation rule, and API call involved in that pipeline.
+
+---
+
+## End-to-End Workflow
+
+<Steps>
+  <Step title="Transportista Submits a Report">
+    The driver opens the **Registrar Accidente** screen (`Accidentes.jsx`), fills in the required fields — location pin on the map, accident type, at least one victim, and a photo — then taps **Registrar Accidente**. The app calls `POST /accidentes/crearAccidente` followed by `POST /accidentes/subirFoto/{id}` for the image upload.
+  </Step>
+  <Step title="Autoridad Reviews the Report">
+    Authorities see all submitted reports in `AprobarAccidentes.jsx`, defaulting to the `PENDIENTE` filter. Each card shows the reporting transportista's name, the date, the address, and the accident type. A **Ver todos los detalles** button opens a slide-up modal with the full record including the photo.
+  </Step>
+  <Step title="Autoridad Approves or Rejects">
+    For pending reports, two action buttons are displayed: **✅ Aprobar** and **❌ Rechazar**. Both trigger `POST /accidentes/aprobar/{id}` with `{ aprobado: true }` or `{ aprobado: false }`. If the report is flagged `⚠️ INCOMPLETO` (missing victims or vehicle), the authority can first tap **✏️ Completar datos faltantes** to fill in the blanks via `PUT /accidentes/completar/{id}`.
+  </Step>
+  <Step title="Transportista Is Notified">
+    After the decision, an FCM push notification and a WebSocket message are dispatched to the transportista's device. The notification type is `ACCIDENTE_APROBADO` or `ACCIDENTE_RECHAZADO`, and the driver can check their report's current state in the **EstadoAccidentesTransportista** view.
+  </Step>
+</Steps>
+
+---
+
+## Accident Report Form — `Accidentes.jsx`
+
+The `Accidentes` component is a scrollable form rendered inside the `DashboardTransportista`. It receives `idAutoridad` (the logged-in user's ID) and an `onClose` callback.
+
+<Note>
+  Accident photos require explicit runtime permissions. On Android the app requests `CAMERA` permission before opening the camera and `READ_MEDIA_IMAGES` (Android 13+) or `READ_EXTERNAL_STORAGE` (Android ≤12) before opening the gallery. The permission rationale dialogs are shown automatically; if the user denies, an `Alert` instructs them to enable the permission in device settings.
+</Note>
+
+### Required Fields
+
+<CardGroup cols={2}>
+  <Card title="Accident Location" icon="map-pin">
+    A tappable button opens a full-screen `MapView` modal. The user taps the map to drop a red `Marker`; the Nominatim reverse-geocoding API auto-fills the address field. Both latitude/longitude and address must be present and valid.
+  </Card>
+  <Card title="Accident Type" icon="triangle-exclamation">
+    A `Picker` loads existing types from `GET /accidentes/listarTipoAccidente`. The user can also select **+ Crear nuevo tipo** to enter a custom name and optional description.
+  </Card>
+  <Card title="Photo" icon="camera">
+    At least one photo is mandatory. The user can capture a new image with the back camera (`launchCamera`) or pick from the gallery (`launchImageLibrary`). Images are uploaded separately after the accident record is created, via `POST /accidentes/subirFoto/{id}` with `multipart/form-data`.
+  </Card>
+  <Card title="Victims" icon="user-injured">
+    At least one victim must be added via the `VictimaModal` sub-form. Each victim card shows full name, document number, gender, age, and condition. Existing victims can be removed before submission.
+  </Card>
+</CardGroup>
+
+### Optional Fields
+
+| Field | Details |
+|---|---|
+| Vehicles | Added via `VehiculoModal`. Plate, make, model, year, colour, doors, capacity, and vehicle type. |
+| Accident type description | Pre-filled read-only if an existing type is selected; editable only when creating a new type or if the existing type has no stored description. |
+
+---
+
+## Sub-Form Modals
+
+### `VictimaModal`
+
+The victim sub-form captures: first name, last name, national ID (`cedula`) or passport, gender, age, and condition. Validation runs on every field using `validacionVictima.js`:
+
+```jsx
+// Accidentes.jsx — adding a victim to the list
+const agregarVictima = (victima) => {
+  setVictimas([...victimas, victima]);
+  showToast('Víctima agregada', 'success');
+};
+```
+
+### `VehiculoModal`
+
+The vehicle sub-form collects: plate number, make, model, year, colour, number of doors, capacity, and a full vehicle-type object (name, description, category, use, passenger capacity, cargo capacity in kg, risk level). Validation runs via `validacionVehiculo.js`.
+
+---
+
+## Validation Utilities
+
+All three validation modules live under `src/Utils/` and are imported by the form components.
+
+<Accordion title="validacionAccidentes.js — form-level validation">
+  The primary validation suite for the accident report form. Key exported functions:
+
+  | Function | Purpose |
+  |---|---|
+  | `validarUbicacion(ubicacion)` | Confirms lat/lng are present, within valid ranges, and not the default Guayaquil placeholder `(-2.9001, -79.0059)`. |
+  | `validarDireccion(direccion)` | Optional but, if provided, must be 10–500 characters. |
+  | `validarTipoAccidente(id, crearNuevo, nombre)` | Either a valid existing ID must be selected, or a new type name of 3–100 characters must be provided. |
+  | `validarFoto(foto)` | Mandatory; validates `uri` presence, `image/*` MIME type, and max 10 MB file size. |
+  | `validarVictimas(victimas)` | At least one victim; each must have name, surname, and either `cedula` or `pasaporte`. |
+  | `validarVehiculos(vehiculos)` | Optional list; each vehicle must have `placa`, `marca`, and `tipoVehiculoNombre`. |
+  | `validarAccidenteCompleto(datos)` | Runs all of the above and returns `{ isValid, errors, categorizedErrors: { criticos, advertencias } }`. |
+  | `obtenerResumenValidacion(validacion)` | Converts the result into a user-facing `{ tipo, titulo, mensaje }` object for the toast system. |
+
+  ```js
+  // src/Utils/validacionAccidentes.js — full-form validation call
+  const validacionCompleta = validaciones.validarAccidenteCompleto(datosAccidente);
+
+  if (!validacionCompleta.isValid) {
+    const resumen = validaciones.obtenerResumenValidacion(validacionCompleta);
+    showToast(resumen.mensaje, resumen.tipo === 'error' ? 'error' : 'warning');
+    return;
+  }
+  ```
+</Accordion>
+
+<Accordion title="validacionVehiculo.js — vehicle field validation">
+  Validates each vehicle field individually and exports `validarVehiculoCompleto` for composite validation.
+
+  ```js
+  // src/Utils/validacionVehiculo.js — plate format validation
+  export const validarPlaca = (placa) => {
+    // Accepts Ecuador format: ABC-1234 or ABC1234
+    const formatoEcuador = /^[A-Z]{3}-?\d{3,4}$/;
+    // ...
+  };
+  ```
+
+  Key rules:
+  - **Placa**: required, 6–10 chars, `[A-Z0-9-]+`, Ecuador format `ABC-1234` recommended.
+  - **Marca**: required, 2–50 chars, letters/numbers/spaces/hyphens.
+  - **Año**: optional, 4 digits, 1900 – current year + 2.
+  - **Tipo de vehículo**: name required when creating a new type; risk level must be 1–10 if provided.
+</Accordion>
+
+<Accordion title="validacionVictima.js — victim field validation">
+  Full validation including an Ecuadorian cédula check digit algorithm.
+
+  ```js
+  // src/Utils/validacionVictima.js — cédula Luhn-style verifier
+  export const validateCedula = (cedula) => {
+    // Province code: digits 1-2 must be 01–24
+    // Third digit: 0-5 natural persons, 6 foreign residents, 9 legal entities
+    // Digits 1-9 multiplied by [2,1,2,1,2,1,2,1,2] coefficients;
+    // values ≥ 10 subtract 9; sum mod 10 gives the check digit
+    // ...
+  };
+  ```
+
+  Key rules:
+  - **Nombre / Apellido**: required, 2–50 chars, letters only, must not be identical to each other.
+  - **Cédula**: exactly 10 digits; province code 01–24; passes algorithmic check digit.
+  - **Pasaporte**: 6–12 chars, `[A-Z0-9]+`, must contain at least one letter and one digit.
+  - **Género**: must be one of `Masculino`, `Femenino`, `Otro`, `Prefiero no decir`.
+  - **Edad**: optional but, if given, must be a positive integer ≤ 150.
+</Accordion>
+
+---
+
+## `registroAccidente.js` Utility
+
+`src/Utils/registroAccidente.js` provides a lower-level, constants-driven validation layer used for early field-by-field checks:
+
+```js
+// src/Utils/registroAccidente.js — validation constants
+const VALIDATION_RULES = {
+  vehiculo: {
+    placa: { minLength: 6, maxLength: 8, pattern: /^[A-Z0-9-]+$/, required: true },
+    anio:  { min: 1900, max: new Date().getFullYear() + 1,           required: true },
+  },
+  foto: {
+    maxSize: 10 * 1024 * 1024,                           // 10 MB
+    allowedTypes: ['image/jpeg', 'image/jpg', 'image/png'],
+  },
+};
+```
+
+The module exports `validateRegistroAccidente(formData)` which runs location, address, accident type, and photo checks and returns `{ isValid, errors, firstError }`.
+
+---
+
+## Real-Time Form Feedback
+
+The form uses a `Toast` component with a 3-second auto-dismiss and a progress-bar animation. Toast types map to colours and icons:
+
+| `type` | Colour | Icon |
+|---|---|---|
+| `success` | `#28a745` green | ✅ |
+| `error` | `#dc3545` red | ❌ |
+| `warning` | `#ffc107` amber | ⚠️ |
+| `info` | `#17a2b8` teal | ℹ️ |
+
+Field-level errors appear inline in red text below each input, and the input border changes to red (`borderColor: '#ff4444'`) when the field has been touched and is invalid. A green border (`borderColor: '#28a745'`) confirms a valid value.
+
+---
+
+## Authority Approval Screen — `AprobarAccidentes.jsx`
+
+<Tabs>
+  <Tab title="Filtering">
+    The screen loads all transportista-submitted reports from `GET /accidentes/listar-transportistas` and provides two filter axes:
+
+    **Status filter** (horizontal chip row):
+    - `TODOS` — all reports regardless of state
+    - `PENDIENTE` — `aprobado === null` (default)
+    - `APROBADO` — `aprobado === true`
+    - `RECHAZADO` — `aprobado === false`
+
+    **Date range filter** (collapsible panel with quick-select buttons):
+    - Today / Last 7 days / Last 30 days
+    - Custom `YYYY-MM-DD` from/to inputs
+
+    ```jsx
+    // AprobarAccidentes.jsx — client-side filter logic
+    const accidentesFiltrados = accidentes.filter(acc => {
+      if (filtroEstado !== 'TODOS') {
+        if (filtroEstado === 'PENDIENTE' && acc.aprobado !== null)  return false;
+        if (filtroEstado === 'APROBADO' && acc.aprobado !== true)   return false;
+        if (filtroEstado === 'RECHAZADO' && acc.aprobado !== false) return false;
+      }
+      if (fechaInicio) {
+        const inicio = new Date(fechaInicio);
+        inicio.setHours(0, 0, 0, 0);
+        if (new Date(acc.fecha) < inicio) return false;
+      }
+      if (fechaFin) {
+        const fin = new Date(fechaFin);
+        fin.setHours(23, 59, 59, 999);
+        if (new Date(acc.fecha) > fin) return false;
+      }
+      return true;
+    });
+    ```
+  </Tab>
+  <Tab title="Approve / Reject">
+    For any report where `aprobado === null`, both action buttons are rendered. Tapping either shows an `Alert` confirmation dialog before calling the backend:
+
+    ```jsx
+    // AprobarAccidentes.jsx — approve/reject API call
+    const procesarAccidente = async (id, aprobado) => {
+      setProcesando(id);
+      await API.post(`/accidentes/aprobar/${id}`, { aprobado });
+      cargarAccidentes(); // refresh the list
+    };
+    ```
+
+    Once processed, the badge on the card updates to `APROBADO` (green) or `RECHAZADO` (red) and the action buttons disappear.
+  </Tab>
+  <Tab title="Complete Missing Data">
+    If a report is marked `⚠️ INCOMPLETO` (no victims or no vehicle), the authority can tap **✏️ Completar datos faltantes** to open a full-screen modal. Existing victims and vehicles are pre-loaded; new ones can be added inline. Saving calls:
+
+    ```jsx
+    // AprobarAccidentes.jsx — complete missing data
+    await API.put(`/accidentes/completar/${modalCompletarDatos.id}`, {
+      victimas: victimasValidas,
+      vehiculos: vehiculosValidos,
+    });
+    ```
+  </Tab>
+  <Tab title="Detail Modal">
+    **Ver todos los detalles** opens a bottom-sheet modal with:
+    - General info (status, date)
+    - Reporting transportista (name, cédula, email)
+    - Location address
+    - Victims list with condition
+    - Accident photo (tappable to expand full-screen)
+
+    The photo URL is resolved via `construirUrlImagen`, which prepends the API base URL for relative paths:
+
+    ```jsx
+    // AprobarAccidentes.jsx — image URL builder
+    const construirUrlImagen = (fotoUrl) => {
+      if (fotoUrl.startsWith('http://') || fotoUrl.startsWith('https://')) {
+        return fotoUrl;
+      }
+      const baseUrl = API.defaults.baseURL;
+      const rutaLimpia = fotoUrl.startsWith('/') ? fotoUrl.substring(1) : fotoUrl;
+      return `${baseUrl}/accidentes/archivos/${rutaLimpia}`;
+    };
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Driver Status Check — `EstadoAccidentesTransportista`
+
+Transportistas can track the approval status of every report they have submitted. The component reads the `aprobado` field to render:
+
+<CardGroup cols={3}>
+  <Card title="PENDIENTE" icon="clock">
+    `aprobado === null` — amber badge; the report has been received and is awaiting review.
+  </Card>
+  <Card title="APROBADO" icon="circle-check">
+    `aprobado === true` — green badge; the authority has validated the report.
+  </Card>
+  <Card title="RECHAZADO" icon="circle-xmark">
+    `aprobado === false` — red badge; the report was not accepted by the authority.
+  </Card>
+</CardGroup>
+
+---
+
+## REST API Reference
+
+| Method | Endpoint | Used by |
+|---|---|---|
+| `GET` | `/accidentes/listarTipoAccidente` | Populate accident type picker |
+| `POST` | `/accidentes/crearAccidente` | Submit the full accident record |
+| `POST` | `/accidentes/subirFoto/{id}` | Upload the accident photo |
+| `GET` | `/accidentes/listar-transportistas` | Load all reports (authority view) |
+| `POST` | `/accidentes/aprobar/{id}` | Approve or reject a report |
+| `PUT` | `/accidentes/completar/{id}` | Fill missing victims/vehicles |
+
+<Warning>
+  The `POST /accidentes/crearAccidente` payload requires `idAutoridad` to be the numeric ID of the logged-in transportista user (confusingly named "Autoridad" in the transport authority context — this field identifies the submitting user, not the reviewing authority). Submitting without a valid `idAutoridad` will result in a server-side error.
+</Warning>

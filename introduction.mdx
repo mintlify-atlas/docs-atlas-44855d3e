@@ -1,0 +1,70 @@
+---
+title: "RutaMovil: Mobile Road Safety Management Platform"
+sidebarTitle: "Introduction"
+description: "RutaMovil (Sicher) is a React Native app connecting drivers, traffic authorities, and admins for real-time road accident reporting and management."
+---
+
+RutaMovil — also branded as **Sicher** — is a cross-platform mobile application built with React Native 0.82 that unifies three distinct user roles around a single goal: faster, more transparent road accident management. Transportistas (drivers) file geo-tagged accident reports from the field; Autoridades (traffic authorities) review and approve those reports in real time; Admins oversee the entire system from a dedicated dashboard. Every action — from submitting a report to receiving an approval decision — is backed by Firebase push notifications, a STOMP/SockJS WebSocket feed, and a Spring Boot REST API, so every stakeholder is always working from the same live data.
+
+## User Roles
+
+RutaMovil organises access around three roles, each with its own dashboard and permission set.
+
+<CardGroup cols={3}>
+  <Card title="Transportista" icon="truck">
+    Drivers who travel assigned routes. They submit accident reports with GPS coordinates, photos, and incident details, then track the approval status of each submission directly from their dashboard.
+  </Card>
+  <Card title="Autoridad" icon="shield-halved">
+    Traffic authorities who receive instant push notifications when a new accident is reported. They review the evidence, approve or reject reports, and access analytics charts in the Reportes module.
+  </Card>
+  <Card title="Admin" icon="user-gear">
+    System administrators who manage user accounts, configure roles, and oversee platform health. Admin login is handled through a separate, hardened authentication flow inside the app.
+  </Card>
+</CardGroup>
+
+## Key Capabilities
+
+<Accordion title="GPS Navigation and Route Mapping">
+  The **MapaRutas** component renders an interactive Google Maps view powered by `react-native-maps` and the Google Maps Directions API. Drivers can view their assigned route, get turn-by-turn guidance via `expo-speech`, and see the precise location of active incidents overlaid on the map.
+</Accordion>
+
+<Accordion title="Accident Reporting">
+  The **Accidentes** component provides a structured report form that captures incident type, description, timestamp (via `@react-native-community/datetimepicker`), attached images (`react-native-image-picker`), and the device's GPS coordinates (`react-native-geolocation-service`). Reports are submitted to the Spring Boot backend over Axios.
+</Accordion>
+
+<Accordion title="Approval Workflow">
+  **AprobarAccidentes** gives Autoridades a queue of pending reports. Each card shows the transportista's details, location, and evidence. Approving or rejecting a report triggers a backend state change and immediately dispatches an FCM push notification back to the driver.
+</Accordion>
+
+<Accordion title="Real-Time Push Notifications">
+  Firebase Cloud Messaging (FCM) via `@react-native-firebase/messaging` delivers alerts for new reports (`NUEVO_ACCIDENTE`), approvals (`ACCIDENTE_APROBADO`), and rejections (`ACCIDENTE_RECHAZADO`). The `FirebaseService` class handles token registration, foreground display with Notifee, and deep-link routing on notification tap.
+</Accordion>
+
+<Accordion title="STOMP/SockJS WebSocket Feed">
+  The `WebSocketService` class maintains a persistent STOMP connection over SockJS to the `/topic/accidentes` channel. Authority dashboards receive live accident updates without polling, with automatic exponential-backoff reconnection (up to 5 attempts).
+</Accordion>
+
+<Accordion title="Multi-Factor Authentication (MFA)">
+  Both email/password and Google Sign-In flows support TOTP-based MFA. When the backend returns `requiresMFA: true`, the app presents a six-digit code entry screen. The **MFASetup** component guides users through scanning a QR code with an authenticator app during initial enrollment.
+</Accordion>
+
+<Accordion title="Password Recovery">
+  Transportistas and Autoridades can request a password-reset link via `POST /api/password/request-reset`. The reset token is valid for 15 minutes and is sent directly to the registered email address.
+</Accordion>
+
+## Explore Further
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, configure Firebase, and run RutaMovil on Android or iOS in five steps.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand the system topology: React Native client, Spring Boot API, Firebase services, and WebSocket channels.
+  </Card>
+  <Card title="Transportista Guide" icon="truck" href="/roles/transportista">
+    Deep dive into the driver experience — reporting accidents, tracking approvals, and navigating routes.
+  </Card>
+  <Card title="Autoridad Guide" icon="shield-halved" href="/roles/autoridad">
+    Learn how traffic authorities manage the approval queue, read analytics, and configure notifications.
+  </Card>
+</CardGroup>

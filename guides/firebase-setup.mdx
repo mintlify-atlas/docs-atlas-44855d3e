@@ -1,0 +1,289 @@
+---
+title: "Configure Firebase for RutaMovil Auth and Notifications"
+sidebarTitle: "Firebase Setup"
+description: "Step-by-step guide to wiring Firebase Auth and Cloud Messaging into RutaMovil (Sicher) for push notifications and secure user authentication."
+---
+
+RutaMovil (Sicher) relies on two Firebase products to power its identity and notification layers: **Firebase Auth** (`@react-native-firebase/auth`) handles email/password and Google OAuth sign-in flows for all three user roles, while **Firebase Cloud Messaging** (`@react-native-firebase/messaging`) delivers real-time push notifications when accidents are reported, approved, or rejected. This page walks through creating the Firebase project, placing the native config files, and understanding the `FirebaseService` class that wires everything together at runtime.
+
+<Warning>
+  `google-services.json` (Android) and `GoogleService-Info.plist` (iOS) contain
+  sensitive API keys and are **gitignored** by default. You must provision these
+  files manually on every developer machine and CI environment before building
+  the app. Never commit them to source control.
+</Warning>
+
+---
+
+## Firebase Project Setup
+
+<Steps>
+  <Step title="Create a Firebase project">
+    Open the [Firebase Console](https://console.firebase.google.com/) and click
+    **Add project**. Give it a name (e.g. `sicher-rutamovil`), optionally enable
+    Google Analytics, and click **Create project**.
+  </Step>
+
+  <Step title="Enable Authentication providers">
+    In the left sidebar go to **Build → Authentication → Sign-in method** and
+    enable the following providers:
+
+    <CardGroup cols={2}>
+      <Card title="Email / Password" icon="envelope">
+        Toggle **Email/Password** to enabled. This powers the
+        `handleLoginNormal` flow for both Autoridades and Transportistas.
+      </Card>
+      <Card title="Google" icon="google">
+        Toggle **Google** to enabled. The OAuth Web Client ID it generates is
+        the value you'll use in `GoogleSignin.configure()`.
+      </Card>
+    </CardGroup>
+  </Step>
+
+  <Step title="Enable Cloud Messaging">
+    Navigate to **Project Settings → Cloud Messaging**. Confirm that the
+    Firebase Cloud Messaging API is enabled. No additional configuration is
+    required here — the React Native SDK handles token registration
+    automatically.
+  </Step>
+
+  <Step title="Add the Android app">
+    In **Project Settings → General**, click **Add app → Android**. Set the
+    Android package name to `com.ruta` (matching `namespace` in
+    `android/app/build.gradle`). Download the generated
+    `google-services.json` and place it at:
+
+    ```text
+    android/app/google-services.json
+    ```
+
+    The `google-services` Gradle plugin is already applied at the bottom of
+    `android/app/build.gradle`:
+
+    ```groovy android/app/build.gradle
+    // 🔥 GOOGLE SERVICES PLUGIN AL FINAL
+    apply plugin: 'com.google.gms.google-services'
+    ```
+
+    Firebase dependencies are also declared in the same file:
+
+    ```groovy android/app/build.gradle
+    // 🔥 FIREBASE HABILITADO
+    implementation platform('com.google.firebase:firebase-bom:33.7.0')
+    implementation 'com.google.firebase:firebase-messaging'
+    implementation 'com.google.firebase:firebase-analytics'
+    ```
+  </Step>
+
+  <Step title="Add the iOS app">
+    In **Project Settings → General**, click **Add app → iOS**. Set the bundle
+    ID to match your Xcode project (default: `com.ruta`). Download the generated
+    `GoogleService-Info.plist` and place it at:
+
+    ```text
+    ios/ruta/GoogleService-Info.plist
+    ```
+
+    Open Xcode, right-click the `ruta` group, and select **Add Files to "ruta"**
+    to ensure the plist is bundled with the app target.
+  </Step>
+
+  <Step title="Configure Google Sign-In">
+    The **Web OAuth Client ID** generated when you enabled the Google provider
+    is used in `Login.jsx` to configure the Google Sign-In SDK:
+
+    ```jsx src/Components/Login.jsx
+    GoogleSignin.configure({
+      webClientId: '267093356780-61j6l12lhevi4a14q7aihook3bna9i64.apps.googleusercontent.com',
+      offlineAccess: true,
+      forceCodeForRefreshToken: true,
+    });
+    ```
+
+    Replace the `webClientId` value with the **Web client (auto created by Google Service)** OAuth 2.0 client ID found in **Firebase Console → Project Settings → General → Your apps → Web API Key** or directly in the Google Cloud Console under **APIs & Services → Credentials**.
+  </Step>
+
+  <Step title="Install React Native Firebase packages">
+    RutaMovil requires the following packages (already listed in `package.json`):
+
+    ```json package.json
+    "@react-native-firebase/app": "^23.7.0",
+    "@react-native-firebase/auth": "^23.5.0",
+    "@react-native-firebase/messaging": "^23.7.0"
+    ```
+
+    Foreground notification display additionally requires
+    `@notifee/react-native` as a **peer dependency** — install it separately if
+    it is not already present in your project:
+
+    ```bash
+    npm install @notifee/react-native
+    ```
+
+    <Note>
+      `@notifee/react-native` is used exclusively for rendering foreground
+      notifications with a custom Android channel. Background and quit-state
+      notifications are handled natively by the FCM SDK without Notifee.
+    </Note>
+  </Step>
+</Steps>
+
+---
+
+## FirebaseService Class
+
+The `FirebaseService` class in `src/services/firebase.jsx` is a singleton that
+centralises all Firebase interactions. It is exported as a default instance and
+consumed by the `useFirebaseNotifications` hook.
+
+<CardGroup cols={2}>
+  <Card title="initialize()" icon="rocket">
+    Requests notification permissions, retrieves the FCM token, and calls
+    `setupNotificationListeners()`. Returns the token string on success or
+    `null` if permissions are denied.
+  </Card>
+  <Card title="getFCMToken()" icon="key">
+    Calls `messaging().getToken()` and returns the current device token, or
+    `null` on error.
+  </Card>
+  <Card title="saveTokenToBackend(userId, userType, token)" icon="database">
+    POSTs the FCM token to the correct backend endpoint based on `userType`.
+    See the full implementation below.
+  </Card>
+  <Card title="setupNotificationListeners()" icon="bell">
+    Registers three FCM listeners: `onMessage` (foreground), 
+    `setBackgroundMessageHandler` (background/quit), and
+    `onNotificationOpenedApp` (tap-to-open).
+  </Card>
+  <Card title="displayNotification(remoteMessage)" icon="mobile">
+    Creates (or re-uses) the `sicher-accidents` Notifee channel and renders a
+    local notification from an incoming FCM `remoteMessage`.
+  </Card>
+  <Card title="deleteToken()" icon="trash">
+    Calls `messaging().deleteToken()` — invoke this during sign-out so the
+    backend stops sending notifications to a logged-out device.
+  </Card>
+  <Card title="checkPermissions()" icon="shield">
+    Returns `true` if the user has granted `AUTHORIZED` or `PROVISIONAL`
+    notification permissions.
+  </Card>
+</CardGroup>
+
+### saveTokenToBackend
+
+This method selects the correct REST endpoint based on the user's role and
+persists the FCM device token so the backend can target the right user for
+push notifications:
+
+```jsx src/services/firebase.jsx
+async saveTokenToBackend(userId, userType, token) {
+  try {
+    const endpoint = userType === 'transportista'
+      ? '/transportistas/fcm-token'
+      : '/autoridades/fcm-token';
+
+    await API.post(endpoint, {
+      userId,
+      fcmToken: token
+    });
+
+    console.log('✅ Token FCM guardado en el backend');
+  } catch (error) {
+    console.error('❌ Error al guardar token FCM:', error);
+  }
+}
+```
+
+---
+
+## Android Notification Channel
+
+Android 8.0 (API 26) and above require a notification channel before a local
+notification can be displayed. `displayNotification()` calls
+`notifee.createChannel()` every time it runs (Notifee is idempotent for
+existing channels):
+
+```jsx src/services/firebase.jsx
+const channelId = await notifee.createChannel({
+  id: 'sicher-accidents',
+  name: 'Accidentes Sicher',
+  importance: AndroidImportance.HIGH,
+  visibility: AndroidVisibility.PUBLIC,
+  sound: 'default',
+  vibration: true,
+});
+```
+
+<Tip>
+  Channel settings (importance, sound) are locked by Android after the channel
+  is created the first time. During development, uninstall the app or clear app
+  data to reset the channel configuration when iterating on notification
+  appearance.
+</Tip>
+
+---
+
+## useFirebaseNotifications Hook
+
+The `useFirebaseNotifications` hook is exported alongside the service from
+`src/services/firebase.jsx`. It is the recommended integration point for
+dashboard components.
+
+**Signature:**
+
+```jsx src/services/firebase.jsx
+export const useFirebaseNotifications = (userId, userType) => {
+  const [notificationCount, setNotificationCount] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!userId || !userType) return;
+
+    const initializeFirebase = async () => {
+      try {
+        const token = await FirebaseService.initialize();
+
+        if (token) {
+          await FirebaseService.saveTokenToBackend(userId, userType, token);
+        }
+      } catch (error) {
+        console.error('❌ Error al inicializar notificaciones:', error);
+      }
+    };
+
+    initializeFirebase();
+
+    return () => {
+      console.log('🧹 Limpiando listeners de Firebase');
+    };
+  }, [userId, userType]);
+
+  return { notificationCount };
+};
+```
+
+**Returns:**
+
+| Field | Type | Description |
+|---|---|---|
+| `notificationCount` | `number` | Running count of notifications received in the current session. Starts at `0`. |
+
+**Usage in a dashboard:**
+
+```jsx
+import { useFirebaseNotifications } from '../services/firebase';
+
+export default function DashboardTransportista({ datosTransportista }) {
+  const { notificationCount } = useFirebaseNotifications(
+    datosTransportista.userId,
+    'transportista'
+  );
+
+  // notificationCount can be displayed as a badge
+}
+```
+
+<Info>
+  The hook only initialises Firebase when both `userId` and `userType` are
+  truthy. Pass them only after the user has successfully authenticated to avoid
+  registering an anonymous FCM token with the backend.
+</Info>

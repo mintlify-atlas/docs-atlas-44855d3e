@@ -1,0 +1,274 @@
+---
+title: "Interactive Map and GPS Route Navigation"
+sidebarTitle: "Map & Navigation"
+description: "Explore MapaRutas: real-time GPS tracking, destination search with autocomplete, turn-by-turn directions, and transport mode switching for Ecuador routes."
+---
+
+**MapaRutas** is the core navigation screen of RutaMovil (Sicher), providing transportistas and other users with a full-featured interactive map, live GPS positioning, destination search with Google Places autocomplete, and step-by-step route guidance. This page documents every subsystem that powers the map experience — from the GPS precision algorithm inside `useLocation` to the floating action menu and popular-places catalog.
+
+---
+
+## Architecture Overview
+
+`MapaRutas.jsx` is a single-screen component that composes four dedicated hooks, a `MapView` with a `MapViewDirections` overlay, and a slide-up search panel:
+
+<CardGroup cols={2}>
+  <Card title="useLocation" icon="location-dot">
+    Manages GPS acquisition, precision filtering, stability locking, and live position updates via `watchPosition`.
+  </Card>
+  <Card title="usePlacesSearch" icon="magnifying-glass">
+    Handles the destination text input, calls the Google Places Autocomplete API, and resolves a selected suggestion into map coordinates.
+  </Card>
+  <Card title="useNavigation" icon="route">
+    Calculates the route once a destination is set, exposes distance/duration info, manages turn-by-turn step progression, and controls voice guidance state.
+  </Card>
+  <Card title="useUIState" icon="sidebar">
+    Tracks transport mode selection, search panel visibility, the transport-mode picker, and the fade animation for the search panel.
+  </Card>
+</CardGroup>
+
+---
+
+## GPS Location Hook — `useLocation`
+
+The `useLocation` hook, located at `src/Hooks/useLocation.jsx`, implements a two-phase GPS strategy that balances startup speed with long-term accuracy.
+
+### Precision Algorithm
+
+<Steps>
+  <Step title="Phase 1 — Fast Fix (Network/Wi-Fi)">
+    `Geolocation.getCurrentPosition` is called with `enableHighAccuracy: false` and a 15-second timeout. This gives the user an immediate visual position using cell-tower or Wi-Fi triangulation, so the map is never blank while the GPS satellite link establishes.
+  </Step>
+  <Step title="Phase 2 — Continuous Watch (High-Accuracy GPS)">
+    In parallel, `Geolocation.watchPosition` runs continuously with `enableHighAccuracy: true`, polling every 2 seconds (`interval: 2000`, `fastestInterval: 1000`). Every incoming reading is passed through `procesarNuevaPosicion`.
+  </Step>
+  <Step title="Precision Filter">
+    Any reading whose `accuracy` value exceeds `PRECISION_MAXIMA_ACEPTABLE = 30` metres is discarded immediately. Only high-confidence fixes enter the stability analysis window.
+  </Step>
+  <Step title="Stability Locking">
+    The last 12 samples are kept in a rolling buffer (`VENTANA_MUESTRAS = 12`). When at least 6 samples are available (`MIN_MUESTRAS_ANALISIS = 6`), the hook computes the maximum spread radius from the median centre. If the radius falls inside the stability threshold (the greater of 15 m or 70 % of the average accuracy), a counter increments. After 5 consecutive stable readings (`LECTURAS_CONSECUTIVAS_QUIETO = 5`), the position is **locked** — it stops updating until the user travels more than 20 m (`DISTANCIA_DESBLOQUEO`) and at least 4 seconds have elapsed (`TIMEOUT_DESBLOQUEO = 4000 ms`).
+  </Step>
+  <Step title="Optimal Position Calculation">
+    Rather than using the raw last reading, `calcularPosicionOptima` selects the best 40 % of buffered samples (sorted by accuracy) and returns their median latitude/longitude, giving a smoothed, drift-resistant coordinate.
+  </Step>
+</Steps>
+
+<Tip>
+  A position is considered **stable** once all recent readings fall within a 15-metre radius of the computed median centre. While locked, the blue dot on the map does not jitter — it only moves when genuine travel of at least 20 metres is detected. Use `forzarActualizacion()` to manually unlock the position if the device has been moved but the lock has not yet released.
+</Tip>
+
+### Hook Return Values
+
+```jsx
+// src/Hooks/useLocation.jsx — return object
+return {
+  ubicacionActual,          // { latitude, longitude } | null
+  setUbicacionActual,       // setState override for external consumers
+  cargando,                 // boolean — true while the initial fix is pending
+  setCargando,              // expose setter so MapaRutas can show a refresh spinner
+  precision,                // number (metres) — accuracy of the last accepted reading
+  estaQuieto,               // boolean — true when the position lock is active
+  usandoUbicacionPorDefecto,// boolean — true if the fallback Guayaquil coordinate is in use
+  obtenerUbicacionActual,   // () => void — starts Phase 1 + Phase 2 acquisition
+  detenerSeguimiento,       // () => void — clears watchPosition
+  reiniciarGPS,             // () => void — full reset: clears buffer, restarts acquisition
+  forzarActualizacion,      // () => void — manually unlocks a locked position
+};
+```
+
+### Permission Handling
+
+On Android the hook calls `PermissionsAndroid.request(ACCESS_FINE_LOCATION)` before starting. On iOS, `Geolocation.getCurrentPosition` triggers the system prompt automatically. If permissions are denied, `cargando` is set to `false` and an `Alert` is shown.
+
+---
+
+## Destination Search — `usePlacesSearch`
+
+The `usePlacesSearch` hook wraps the Google Places Autocomplete API to provide real-time destination suggestions as the user types.
+
+<Tabs>
+  <Tab title="Autocomplete Flow">
+    When the user types at least one character in the search `TextInput`, `setMostrarSugerencias(true)` is called and the hook fires an Autocomplete request using `GOOGLE_MAPS_APIKEY`. Each result exposes `structured_formatting.main_text` (the place name) and `structured_formatting.secondary_text` (the secondary descriptor — city, country).
+
+    ```jsx
+    // MapaRutas.jsx — autocomplete suggestion rendering
+    {sugerenciasBusqueda.map((sugerencia, index) => (
+      <TouchableOpacity
+        key={index}
+        style={styles.suggestionItem}
+        onPress={() => handleSeleccionarSugerencia(sugerencia)}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.suggestionMainText}>
+          {sugerencia.structured_formatting.main_text}
+        </Text>
+        <Text style={styles.suggestionSecondaryText}>
+          {sugerencia.structured_formatting.secondary_text}
+        </Text>
+      </TouchableOpacity>
+    ))}
+    ```
+  </Tab>
+  <Tab title="Popular Destinations">
+    When the search input has fewer than 3 characters and no destination has been selected yet, the panel displays a hard-coded list of popular Ecuadorian locations. Tapping one calls `handleSeleccionarLugarPopular`, which sets the search string and immediately triggers `buscarLugar`.
+
+    ```jsx
+    // MapaRutas.jsx — lugaresPopulares constant
+    const lugaresPopulares = [
+      { nombre: 'Chordeleg, Azuay',             emoji: '🏺' },
+      { nombre: 'Gualaceo, Azuay',               emoji: '🌄' },
+      { nombre: 'Sigsig, Azuay',                 emoji: '🏞️' },
+      { nombre: 'Mitad del Mundo, Quito',         emoji: '🌍' },
+      { nombre: 'Parque La Carolina, Quito',      emoji: '🌳' },
+      { nombre: 'Centro Histórico de Quito',      emoji: '🏛️' },
+      { nombre: 'TelefériQo, Quito',              emoji: '🚡' },
+      { nombre: 'Malecón 2000, Guayaquil',        emoji: '🌊' },
+      { nombre: 'Parque de las Iguanas, Guayaquil', emoji: '🦎' },
+      { nombre: 'Cuenca Centro Histórico',        emoji: '🏰' },
+      { nombre: 'Baños de Agua Santa',            emoji: '💧' },
+      { nombre: 'Otavalo',                        emoji: '🎨' },
+    ];
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Route Calculation — `useNavigation`
+
+Once a `destino` coordinate is resolved by `usePlacesSearch`, `MapViewDirections` automatically requests a route from Google Maps using the same `GOOGLE_MAPS_APIKEY` constant. The `useNavigation` hook then manages the step-by-step progression.
+
+```jsx
+// MapaRutas.jsx — Google Maps API key and MapViewDirections usage
+const GOOGLE_MAPS_APIKEY = 'AIzaSyC7Rm9KVUTqX3IraanKcv9BiFzJRxIcXeA';
+
+<MapViewDirections
+  origin={ubicacionActual}
+  destination={destino}
+  apikey={GOOGLE_MAPS_APIKEY}
+  strokeWidth={5}
+  strokeColor="#3B82F6"
+  mode={modoTransporte}
+  language="es"
+  optimizeWaypoints={true}
+  precision="high"
+  timePrecision="now"
+  resetOnChange={false}
+  onReady={onRutaCalculada}
+  onError={(error) => {
+    Alert.alert(
+      'Error de ruta',
+      'No se pudo calcular la ruta. Intenta cambiar el modo de transporte.'
+    );
+  }}
+/>
+```
+
+The `onRutaCalculada` callback, provided by `useNavigation`, receives the full route response and populates `infoRuta` (distance in km and duration in minutes) and the `pasos` array for turn-by-turn instructions.
+
+### Route Info Display
+
+When a route is calculated and the search panel is open, a summary bar appears:
+
+| Field | Source |
+|---|---|
+| `infoRuta.distancia` | km — from `MapViewDirections` `onReady` payload |
+| `infoRuta.duracion` | min — from `MapViewDirections` `onReady` payload |
+
+---
+
+## Transport Modes
+
+Two modes are available, defined as a constant array in `MapaRutas.jsx`:
+
+```jsx
+// MapaRutas.jsx — modosTransporte
+const modosTransporte = [
+  { mode: 'DRIVING', icon: '🚗', label: 'Auto'    },
+  { mode: 'WALKING', icon: '🚶', label: 'Caminar' },
+];
+```
+
+Switching modes calls `handleCambioModoTransporte`, which updates the `useUIState` transport selection **and** calls `limpiarNavegacion()` to clear any previously drawn route, forcing `MapViewDirections` to recalculate with the new mode. The active mode is passed as the `mode` prop to `MapViewDirections`.
+
+---
+
+## Floating Menu — `MenuFlotanteMapa`
+
+The `MenuFlotanteMapa` component renders a set of floating action buttons that remain visible regardless of panel state. In `MapaRutas.jsx` it is configured as follows:
+
+```jsx
+// MapaRutas.jsx — MenuFlotanteMapa props
+<MenuFlotanteMapa
+  panelBusquedaVisible={panelBusquedaVisible}
+  setPanelBusquedaVisible={setPanelBusquedaVisible}
+  siguiendoRuta={siguiendoRuta}
+  vozActivada={vozActivada}
+  setVozActivada={setVozActivada}
+  ubicacionActual={ubicacionActual}
+  mapRef={mapRef}
+  mostrarBotonAccidente={false}
+  mostrarBotonVoz={true}
+  mostrarBotonCentrar={true}
+/>
+```
+
+<CardGroup cols={3}>
+  <Card title="Search Toggle" icon="magnifying-glass">
+    Opens and closes the slide-up search panel (`panelBusquedaVisible`).
+  </Card>
+  <Card title="Centre Map" icon="crosshairs">
+    Animates the `mapRef` camera back to `ubicacionActual`. Only shown when `mostrarBotonCentrar={true}`.
+  </Card>
+  <Card title="Voice Guidance" icon="volume-high">
+    Toggles `vozActivada` for spoken turn-by-turn instructions. Only visible when `mostrarBotonVoz={true}`.
+  </Card>
+</CardGroup>
+
+<Note>
+  The accident report shortcut button (`mostrarBotonAccidente`) is intentionally disabled in the standalone navigation screen. It is enabled in the accident-entry flow where authorities need map access alongside the report form.
+</Note>
+
+---
+
+## Turn-by-Turn Instruction Panel
+
+While `siguiendoRuta` is `true` and steps remain, an instruction overlay renders above the map:
+
+```jsx
+// MapaRutas.jsx — active navigation instruction overlay
+{siguiendoRuta && pasos.length > 0 && pasoActual < pasos.length && (
+  <View style={styles.instruccionActual}>
+    <Text style={styles.instruccionTexto}>
+      {pasos[pasoActual].html_instructions.replace(/<[^>]*>/g, '')}
+    </Text>
+    {distanciaAlProximoPaso !== null && (
+      <Text style={styles.instruccionDistancia}>
+        En {distanciaAlProximoPaso}m
+      </Text>
+    )}
+  </View>
+)}
+```
+
+HTML tags from the Google Directions API response are stripped inline with a regex before display.
+
+---
+
+## Loading State
+
+While the initial GPS fix is pending (`cargando === true`), `MapaRutas` renders a full-screen spinner instead of the map:
+
+```jsx
+// MapaRutas.jsx — loading screen
+if (cargando) {
+  return (
+    <View style={styles.loadingContainer}>
+      <ActivityIndicator size="large" color="#3B82F6" />
+      <Text style={styles.loadingText}>Obteniendo tu ubicación precisa...</Text>
+    </View>
+  );
+}
+```
+
+The "Actualizar mi ubicación" button inside the search panel triggers a manual refresh by setting `cargando` to `true` and calling `obtenerUbicacionActual()`.

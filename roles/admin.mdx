@@ -1,0 +1,253 @@
+---
+title: "Admin Role: System Administration and Reports"
+sidebarTitle: "Admin"
+description: "Guide to the Admin role in RutaMovil — covering the admin login flow, system information panel, audit log viewer, and administrative reports dashboard."
+---
+
+The **Admin** role is the highest-privilege tier in RutaMovil / Sicher. Administrators have system-wide visibility: they can inspect platform information, browse the full audit log of system events, and access administrative report dashboards — without any role-based restrictions on sub-features. The admin interface is intentionally separate from the transportista and autoridad login flows, and is surfaced through a discrete entry point on the main login screen.
+
+<Warning>
+  Admin credentials grant unrestricted access to all system administration features. There is no role-based sub-restriction within the admin dashboard. Treat admin usernames and passwords with the highest level of operational security — never share them, store them in plaintext, or reuse them across services.
+</Warning>
+
+---
+
+## Accessing the Admin Login
+
+The admin login is not displayed prominently on the main login screen. It is accessed through a small **"🔑 Acceso administrador"** button positioned discreetly at the bottom of the login form:
+
+```jsx
+// Login.jsx — discrete admin access button
+<TouchableOpacity onPress={() => setShowAdminLogin(true)}>
+  {/* 👇 NUEVO: Botón discreto para admin */}
+  🔑 Acceso administrador
+</TouchableOpacity>
+
+{showAdminLogin && (
+  <LoginAdmin
+    onClose={() => setShowAdminLogin(false)}
+    onLoginSuccess={handleAdminLoginSuccess}
+  />
+)}
+```
+
+<Note>
+  The admin login button is intentionally unobtrusive — rendered as a small text link at the bottom of the login screen rather than a prominent button. This reduces its visibility to unauthorized users while keeping it accessible to administrators who know where to find it.
+</Note>
+
+---
+
+## Admin Authentication — `LoginAdmin`
+
+`LoginAdmin` is a self-contained component that handles credential validation, API authentication, and optional first-login password change, then transitions directly into `DashboardAdmin`.
+
+### Login Flow
+
+<Steps>
+  <Step title="Enter credentials">
+    The admin provides a **username** (3–20 alphanumeric characters) and **password** (minimum 8 characters, must include uppercase, lowercase, digit, and special character). Both fields are validated in real time as the admin types.
+  </Step>
+  <Step title="Authenticate against the backend">
+    Credentials are posted to the admin-specific endpoint:
+
+    ```jsx
+    // LoginAdmin.jsx
+    const response = await API.post("/admin/login", {
+      usuario: usuario.trim(),
+      contrasena: password
+    });
+    ```
+
+    The response includes `{ admin, primerLogin }`.
+  </Step>
+  <Step title="Handle first-login password change">
+    If `primerLogin === true`, the admin is required to set a new password before accessing the dashboard:
+
+    ```jsx
+    // LoginAdmin.jsx — first-login password change
+    await API.put("/admin/cambiar-contrasena", {
+      usuario: usuario.trim(),
+      contrasena: password,
+      nuevaContrasena: newPassword
+    });
+    ```
+
+    The new password must meet the same strength requirements as the original.
+  </Step>
+  <Step title="Access DashboardAdmin">
+    On successful authentication (or after changing the first-login password), `DashboardAdmin` is rendered with the `adminData` object:
+
+    ```jsx
+    {showDashboard && adminData && (
+      <DashboardAdmin
+        adminData={adminData}
+        onClose={handleCloseDashboard}
+        onLogout={handleLogout}
+      />
+    )}
+    ```
+  </Step>
+</Steps>
+
+### Error Handling
+
+The component uses an animated Toast notification system for feedback:
+
+| HTTP status | Toast message                                  |
+|-------------|------------------------------------------------|
+| `401`       | "Usuario o contraseña incorrectos"             |
+| Network err | "Error de conexión. Verifica tu internet"      |
+| `primerLogin` flag | "Debes cambiar tu contraseña" (info)   |
+
+---
+
+## Dashboard — `DashboardAdmin`
+
+`DashboardAdmin` renders the Sicher Admin interface with a branded dark-blue header (`𝚂𝚒𝚌𝚑𝚎𝚛 Admin`) and a three-tab bottom navigation bar.
+
+```jsx
+// DashboardAdmin.jsx — tab state
+const [tabActiva, setTabActiva] = useState('inicio');
+```
+
+<CardGroup cols={2}>
+  <Card title="🏠 Inicio" icon="house">
+    System information panel rendered by `AdminInfo`.
+  </Card>
+  <Card title="📋 Logs" icon="clipboard-list">
+    Audit log viewer rendered by `Logs`.
+  </Card>
+  <Card title="📊 Reportes" icon="chart-bar">
+    Administrative reports view via `ReportesAdmin` (replaces the main view when active).
+  </Card>
+</CardGroup>
+
+The **Reportes** tab uses a different navigation pattern — rather than switching `tabActiva`, it sets a separate `showReportes` flag that replaces the entire dashboard view with `ReportesAdmin`:
+
+```jsx
+// DashboardAdmin.jsx
+const [showReportes, setShowReportes] = useState(false);
+
+if (showReportes) {
+  return <ReportesAdmin onClose={() => setShowReportes(false)} />;
+}
+```
+
+---
+
+## Tab: Inicio — `AdminInfo`
+
+The home tab renders `AdminInfo`, which displays a system information panel scoped to the authenticated admin:
+
+```jsx
+{tabActiva === 'inicio' && (
+  <AdminInfo
+    onClose={() => {}}
+    adminData={adminData}
+  />
+)}
+```
+
+`AdminInfo` surfaces platform-level details such as system configuration, environment status, and admin account metadata.
+
+---
+
+## Tab: Logs — `Logs` (Audit Log Viewer)
+
+The **Logs** tab renders the `Logs` component, which fetches all system audit events from the backend and presents them in reverse-chronological order.
+
+```jsx
+{tabActiva === 'logs' && (
+  <Logs
+    onClose={() => setTabActiva('inicio')}
+    adminData={adminData}
+  />
+)}
+```
+
+### Loading Logs
+
+```jsx
+// Logs.jsx
+const cargarLogs = async () => {
+  const response = await API.get('/logs');
+
+  // Sort most recent first
+  const logsOrdenados = response.data.sort((a, b) =>
+    new Date(b.fechaHora) - new Date(a.fechaHora)
+  );
+
+  setLogs(logsOrdenados);
+  setLogsOriginales(logsOrdenados);
+};
+```
+
+**Endpoint:** `GET /logs`
+
+### Filtering
+
+<Accordion title="Log filter options">
+  The `Logs` component maintains `fechaInicio` and `fechaFin` state variables used to filter the loaded log list by date range client-side. Logs without a `fechaHora` value are excluded from filtered results.
+
+  A **Refresh** control (pull-to-refresh via `RefreshControl`) re-fetches the full log list from the API and resets any active filters.
+</Accordion>
+
+### Toast Notifications
+
+`Logs` includes the same animated Toast system as `LoginAdmin`, used to surface load errors:
+
+```jsx
+// Logs.jsx — on fetch error
+showToast('Error al cargar los logs', 'error');
+```
+
+---
+
+## Tab: Reportes — `ReportesAdmin`
+
+Tapping the **Reportes** tab replaces the dashboard view with `ReportesAdmin`, a dedicated administrative report screen. The `onClose` callback returns the admin to `DashboardAdmin`:
+
+```jsx
+<TouchableOpacity onPress={() => setShowReportes(true)}>
+  <Text style={styles.bottomTabIcon}>📊</Text>
+  <Text style={styles.bottomTabText}>Reportes</Text>
+</TouchableOpacity>
+```
+
+`ReportesAdmin` provides administrative-level reporting views analogous to the Autoridad's `Reportes` component but scoped to system-wide data accessible only to admins.
+
+---
+
+## Logout
+
+The ⋮ dropdown menu in the header contains a single **"🚪 Cerrar Sesión"** option. Unlike the transportista and autoridad dashboards, the admin session does not use FCM, so no token unregistration is required on logout:
+
+```jsx
+// DashboardAdmin.jsx
+const handleLogout = () => {
+  Alert.alert('🔐 Cerrar Sesión', '¿Estás seguro?', [
+    { text: 'Cancelar', style: 'cancel' },
+    {
+      text: 'Cerrar Sesión',
+      style: 'destructive',
+      onPress: () => {
+        if (onLogout) onLogout();
+        else if (onClose) onClose();
+      }
+    }
+  ]);
+};
+```
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="lock" href="/guides/authentication">
+    Full login flow documentation for all three roles, including Firebase Auth and Google Sign-In.
+  </Card>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Overview of the RutaMovil / Sicher platform, architecture, and user roles.
+  </Card>
+</CardGroup>

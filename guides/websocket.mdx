@@ -1,0 +1,343 @@
+---
+title: "Real-Time WebSocket Integration for Live Accident Events"
+sidebarTitle: "WebSocket"
+description: "How RutaMovil streams real-time accident events using STOMP over SockJS, including connection, subscriptions, reconnect strategy, and cleanup."
+---
+
+RutaMovil uses **STOMP over SockJS** to stream live accident events to connected clients without polling. When a Transportista submits an accident report, the backend broadcasts it over the `/topic/accidentes` STOMP destination; Autoridades and Transportistas subscribed on that topic receive the update in real time. This page covers the `WebSocketService` singleton, its full API, the exponential-backoff reconnect strategy, and best practices for lifecycle management in React Native components.
+
+<Note>
+  The WebSocket server runs on the same backend host as the REST API. Use the
+  base path `https://backend-spring-527951342134.us-central1.run.app/ws` (or
+  whichever path your Spring Boot server exposes the SockJS endpoint on) as the
+  `url` argument when calling `WebSocketService.connect()`. Confirm the exact
+  path with your backend team if you receive a `404` from SockJS during the
+  handshake.
+</Note>
+
+---
+
+## Dependencies
+
+```json package.json (peer dependencies)
+"@stomp/stompjs": "^7.x",
+"sockjs-client": "^1.x"
+```
+
+<Info>
+  `@stomp/stompjs` and `sockjs-client` must be installed separately — they are
+  consumed by `src/services/websocketService.jsx` but are not currently listed
+  in `package.json`. Add them with:
+
+  ```bash
+  npm install @stomp/stompjs sockjs-client
+  ```
+</Info>
+
+---
+
+## WebSocketService Singleton
+
+`src/services/websocketService.jsx` exports a single shared instance of the
+`WebSocketService` class. Import it anywhere in the app — all components share
+the same underlying STOMP client:
+
+```jsx
+import WebSocketService from '../services/websocketService';
+```
+
+### Constructor State
+
+| Property | Default | Description |
+|---|---|---|
+| `client` | `null` | The active `@stomp/stompjs` `Client` instance |
+| `isConnected` | `false` | Whether the STOMP session is currently active |
+| `subscriptions` | `[]` | Array of active STOMP subscription handles |
+| `reconnectAttempts` | `0` | Number of reconnection attempts made so far |
+| `maxReconnectAttempts` | `5` | Hard limit on automatic reconnections |
+| `reconnectDelay` | `3000` | Base delay in milliseconds for backoff calculation |
+
+---
+
+## connect()
+
+Establishes a SockJS transport and activates the STOMP client. On a successful
+connection, the service automatically subscribes to `/topic/accidentes` and
+invokes `onMessageCallback` for each message received.
+
+```jsx src/services/websocketService.jsx
+connect(url, onMessageCallback, onConnectCallback, onErrorCallback) {
+  if (this.isConnected) {
+    console.log('✅ Ya estás conectado al WebSocket');
+    return;
+  }
+
+  this.client = new Client({
+    // Use SockJS as the transport factory
+    webSocketFactory: () => new SockJS(url),
+
+    reconnectDelay: this.reconnectDelay,
+    heartbeatIncoming: 10000,
+    heartbeatOutgoing: 10000,
+
+    // Required for React Native binary frame handling
+    forceBinaryWSFrames: true,
+    appendMissingNULLonIncoming: true,
+
+    debug: (str) => {
+      if (__DEV__) {
+        console.log('🔧 STOMP:', str);
+      }
+    },
+
+    onConnect: (frame) => {
+      this.isConnected = true;
+      this.reconnectAttempts = 0;
+
+      const subscription = this.client.subscribe(
+        '/topic/accidentes',
+        (message) => {
+          try {
+            const data = JSON.parse(message.body);
+            if (onMessageCallback) {
+              onMessageCallback(data);
+            }
+          } catch (error) {
+            console.error('❌ Error al parsear mensaje:', error);
+          }
+        }
+      );
+
+      this.subscriptions.push(subscription);
+
+      if (onConnectCallback) {
+        onConnectCallback();
+      }
+    },
+
+    onStompError: (frame) => {
+      this.isConnected = false;
+      if (onErrorCallback) onErrorCallback(frame);
+      this.attemptReconnect(url, onMessageCallback, onConnectCallback, onErrorCallback);
+    },
+  });
+
+  this.client.activate();
+}
+```
+
+### Parameters
+
+<ParamField path="url" type="string" required>
+  The full SockJS endpoint URL, e.g.
+  `https://backend-spring-527951342134.us-central1.run.app/ws`.
+</ParamField>
+
+<ParamField path="onMessageCallback" type="(data: object) => void">
+  Called with the parsed JSON body of every message published to
+  `/topic/accidentes`. The `data` object shape is determined by the backend
+  accident event schema.
+</ParamField>
+
+<ParamField path="onConnectCallback" type="() => void">
+  Called once after the STOMP session is established and the subscription is
+  registered. Use this to set a `connected` state flag in your component.
+</ParamField>
+
+<ParamField path="onErrorCallback" type="(frame: object) => void">
+  Called on STOMP protocol errors. The service will also trigger
+  `attemptReconnect()` automatically after invoking this callback.
+</ParamField>
+
+---
+
+## send()
+
+Publishes a JSON-serialised message to any STOMP destination:
+
+```jsx src/services/websocketService.jsx
+send(destination, body) {
+  if (!this.isConnected || !this.client) {
+    console.error('❌ No está conectado al WebSocket');
+    return;
+  }
+
+  this.client.publish({
+    destination: destination,
+    body: JSON.stringify(body),
+  });
+}
+```
+
+### Parameters
+
+<ParamField path="destination" type="string" required>
+  The STOMP destination string, e.g. `/app/accidentes`.
+</ParamField>
+
+<ParamField path="body" type="object" required>
+  A plain JavaScript object that will be serialised to JSON before sending.
+</ParamField>
+
+---
+
+## disconnect()
+
+Unsubscribes all active subscriptions, deactivates the STOMP client, and resets
+connection state. Always call this when the component that established the
+connection unmounts.
+
+```jsx src/services/websocketService.jsx
+disconnect() {
+  if (!this.client) return;
+
+  this.subscriptions.forEach((sub) => {
+    try {
+      sub.unsubscribe();
+    } catch (error) {
+      console.error('Error al desuscribirse:', error);
+    }
+  });
+
+  this.subscriptions = [];
+  this.client.deactivate();
+  this.isConnected = false;
+  this.client = null;
+}
+```
+
+<Tip>
+  Always call `WebSocketService.disconnect()` inside the cleanup function of
+  the `useEffect` that calls `connect()`. Failing to do so leaves the STOMP
+  client active after the component unmounts, causing stale message callbacks,
+  memory leaks, and ghost reconnect loops.
+
+  ```jsx
+  useEffect(() => {
+    WebSocketService.connect(WS_URL, onMessage, onConnect, onError);
+
+    return () => {
+      WebSocketService.disconnect();
+    };
+  }, []);
+  ```
+</Tip>
+
+---
+
+## getConnectionStatus()
+
+Returns a snapshot of the current connection state:
+
+```jsx src/services/websocketService.jsx
+getConnectionStatus() {
+  return {
+    isConnected: this.isConnected,
+    reconnectAttempts: this.reconnectAttempts,
+  };
+}
+```
+
+### Response Fields
+
+<ResponseField name="isConnected" type="boolean">
+  `true` when the STOMP session is active and the subscription to
+  `/topic/accidentes` is registered.
+</ResponseField>
+
+<ResponseField name="reconnectAttempts" type="number">
+  Number of reconnection cycles attempted since the last successful connection.
+  Resets to `0` on each successful `onConnect`.
+</ResponseField>
+
+---
+
+## Reconnect Strategy
+
+When a STOMP error occurs, `attemptReconnect()` is called automatically. It
+uses **exponential backoff** so that repeated failures do not flood the server:
+
+```jsx src/services/websocketService.jsx
+attemptReconnect(url, onMessageCallback, onConnectCallback, onErrorCallback) {
+  if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+    console.error('❌ Máximo de intentos de reconexión alcanzado');
+    return;
+  }
+
+  this.reconnectAttempts++;
+  const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+
+  console.log(
+    `🔄 Reintentando (${this.reconnectAttempts}/${this.maxReconnectAttempts}) en ${delay}ms...`
+  );
+
+  setTimeout(() => {
+    this.connect(url, onMessageCallback, onConnectCallback, onErrorCallback);
+  }, delay);
+}
+```
+
+The computed delays for the default `reconnectDelay` of 3000 ms:
+
+| Attempt | Formula | Delay |
+|---|---|---|
+| 1 | 3000 × 2⁰ | 3 s |
+| 2 | 3000 × 2¹ | 6 s |
+| 3 | 3000 × 2² | 12 s |
+| 4 | 3000 × 2³ | 24 s |
+| 5 | 3000 × 2⁴ | 48 s |
+
+After attempt 5 (`maxReconnectAttempts`), reconnection stops and the error
+callback is responsible for surfacing a user-facing message.
+
+---
+
+## Debug Logging
+
+All STOMP protocol frames are logged to the console, but **only in development
+builds** via the React Native `__DEV__` global:
+
+```jsx src/services/websocketService.jsx
+debug: (str) => {
+  if (__DEV__) {
+    console.log('🔧 STOMP:', str);
+  }
+},
+```
+
+In production (`__DEV__ === false`) the debug callback is a no-op, so frame
+logs are never written to the console or any log aggregator.
+
+---
+
+## Full Usage Example
+
+```jsx src/Components/DashboardAutoridad.jsx (example)
+import React, { useEffect, useState } from 'react';
+import WebSocketService from '../services/websocketService';
+
+const WS_URL = 'https://backend-spring-527951342134.us-central1.run.app/ws';
+
+export default function DashboardAutoridad() {
+  const [accidentes, setAccidentes] = useState([]);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  useEffect(() => {
+    WebSocketService.connect(
+      WS_URL,
+      (data) => {
+        // New accident event received from /topic/accidentes
+        setAccidentes((prev) => [data, ...prev]);
+      },
+      () => setWsConnected(true),
+      (err) => console.error('WS error:', err)
+    );
+
+    return () => {
+      WebSocketService.disconnect();
+    };
+  }, []);
+
+  return (/* ... */);
+}
+```

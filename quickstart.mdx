@@ -1,47 +1,142 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with RutaMovil in 5 Steps"
+sidebarTitle: "Quickstart"
+description: "Install dependencies, add your Firebase config files, start Metro, and run RutaMovil on Android or iOS in under ten minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you through everything needed to run RutaMovil (Sicher) locally on a physical device or simulator. The project is a React Native 0.82 application bootstrapped with `@react-native-community/cli`. You will configure Firebase, install native dependencies, start the Metro bundler, and launch the app — no backend setup required, because the Spring Boot API is already deployed at `https://backend-spring-527951342134.us-central1.run.app/api`.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Warning>
+  The Firebase config files (`google-services.json` for Android and `GoogleService-Info.plist` for iOS) **must** be added to the project before you run any build command. Omitting them will cause the native Firebase SDK to throw a fatal error at startup and the app will not launch.
+</Warning>
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you begin, make sure the following tools are available on your machine.
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+<CardGroup cols={2}>
+  <Card title="Node.js ≥ 20" icon="node-js">
+    The `package.json` `engines` field requires Node 20 or later. Use [nvm](https://github.com/nvm-sh/nvm) or the official installer to manage versions.
+  </Card>
+  <Card title="React Native CLI" icon="mobile">
+    Install globally with `npm install -g react-native-cli` or use the project-local CLI via `npx react-native`.
+  </Card>
+  <Card title="Android Studio + JDK 17" icon="android">
+    Required for the Android build toolchain. Set `ANDROID_HOME` and add `platform-tools` to your `PATH`.
+  </Card>
+  <Card title="Xcode 15+ (macOS only)" icon="apple">
+    Required for iOS builds. Install the Command Line Tools via `xcode-select --install` and accept the license.
+  </Card>
+</CardGroup>
 
-## Get started
+<Info>
+  Follow the official [React Native Environment Setup](https://reactnative.dev/docs/set-up-your-environment) guide for your OS before proceeding. It covers Android SDK versions, emulator creation, and iOS simulator configuration.
+</Info>
+
+## Setup Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone the Repository and Install Dependencies">
+    Clone the project and install all JavaScript dependencies listed in `package.json`.
 
     ```bash
-    npm install your-package
+    git clone https://github.com/FajardoVasquez/rutamovil.git
+    cd rutamovil
+    npm install
+    ```
+
+    Key packages installed include `react-native@0.82.1`, `@react-native-firebase/app`, `@react-native-firebase/auth`, `@react-native-firebase/messaging`, `axios@^1.13.2`, `react-native-maps@^1.26.18`, and `@stomp/stompjs` with `sockjs-client`.
+  </Step>
+
+  <Step title="Add Firebase Configuration Files">
+    RutaMovil uses Firebase Auth and Firebase Cloud Messaging. You must download the platform-specific config files from the [Firebase Console](https://console.firebase.google.com) for your Firebase project and place them in the correct native directories.
+
+    **Android** — place `google-services.json` inside `android/app/`:
+
+    ```bash
+    # From the project root
+    cp ~/Downloads/google-services.json android/app/google-services.json
+    ```
+
+    **iOS** — place `GoogleService-Info.plist` inside `ios/ruta/`:
+
+    ```bash
+    # From the project root
+    cp ~/Downloads/GoogleService-Info.plist ios/ruta/GoogleService-Info.plist
+    ```
+
+    The Android Gradle plugin reads `google-services.json` automatically; the iOS CocoaPods integration reads `GoogleService-Info.plist` at compile time.
+
+    <Warning>
+      Never commit these files to version control. Add them to `.gitignore` and distribute them securely to teammates via a secrets manager or CI/CD environment variables.
+    </Warning>
+  </Step>
+
+  <Step title="Install iOS CocoaPods Dependencies (macOS only)">
+    Native iOS dependencies (Firebase SDK, react-native-maps, etc.) are managed by CocoaPods. Install the Ruby bundler first, then run pod install.
+
+    ```bash
+    # Install CocoaPods via Bundler (only needed once per machine)
+    bundle install
+
+    # Install native iOS pods (run after every native dependency change)
+    bundle exec pod install
+    ```
+
+    CocoaPods will fetch and link all native iOS libraries declared in `ios/Podfile`. This step is not required for Android-only development.
+  </Step>
+
+  <Step title="Start the Metro Bundler">
+    Metro is the JavaScript bundler for React Native. Start it in one terminal and leave it running while you develop.
+
+    ```bash
+    npm start
+    ```
+
+    Metro watches your `src/` tree for changes and serves the updated bundle to any connected device or emulator. You can also start it with the cache reset flag if you encounter stale module errors:
+
+    ```bash
+    npm start -- --reset-cache
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Run on Android or iOS">
+    With Metro running, open a **second terminal** and launch the app on your target platform.
+
+    **Android** (emulator or USB-connected device):
 
     ```bash
-    your-cli init
+    npm run android
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+    This runs `react-native run-android`, which compiles the Gradle project, installs the APK, and opens the app. Make sure an Android emulator is running or a device is connected with USB debugging enabled.
+
+    **iOS** (macOS only — simulator or USB-connected device):
 
     ```bash
-    your-cli start
+    npm run ios
     ```
+
+    This runs `react-native run-ios`, which invokes `xcodebuild` using the workspace created by CocoaPods and launches the app in the default iOS Simulator.
+
+    If you need to target a specific device or simulator, pass the `--device` flag:
+
+    ```bash
+    npm run ios -- --device "iPhone 15 Pro"
+    ```
+
+    A successful launch shows the Sicher splash screen (Inicio component) for 10 seconds, then transitions to the Main navigation shell.
   </Step>
 </Steps>
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  **Fast Refresh** is enabled by default in development builds. Any time you save a `.jsx` file, Metro pushes the updated module to the running app in under a second — no full rebuild required. To trigger a hard reload (which resets all React state), press `R` twice on Android or `R` once in the iOS Simulator.
 </Tip>
+
+## Verifying the Setup
+
+Once the app is running, tap **Entrar** in the top-right corner of the header to open the Login modal. You can test connectivity to the live backend by attempting to sign in with a valid Transportista or Autoridad account — a successful role lookup confirms the Axios client is reaching `https://backend-spring-527951342134.us-central1.run.app/api`.
+
+<Info>
+  The app renders an `InternetChecker` component that monitors network status via `@react-native-community/netinfo` and displays an alert when connectivity is lost. This component is always mounted at the root level regardless of authentication state.
+</Info>

@@ -1,0 +1,262 @@
+---
+title: "Authenticate with RutaMovil: Email, Google, and MFA"
+sidebarTitle: "Authentication"
+description: "Learn how RutaMovil authenticates Transportistas and Autoridades using Firebase Auth combined with the RutaMovil REST API for role resolution and MFA."
+---
+
+RutaMovil's authentication system combines **Firebase Auth** with the RutaMovil REST API to securely identify users and resolve their role — either `autoridad` (traffic authority) or `transportista` (driver). Every login attempt, whether via email/password or Google Sign-In, ultimately hits a role-specific REST endpoint that returns the user's profile and indicates whether a second TOTP factor is required. Admins authenticate through a separate, dedicated login flow.
+
+## Login Methods
+
+RutaMovil supports two authentication paths:
+
+<CardGroup cols={2}>
+  <Card title="Email & Password" icon="envelope">
+    Users enter their registered email and password. The app tries both role endpoints sequentially and redirects to the correct dashboard on success.
+  </Card>
+  <Card title="Google Sign-In" icon="google">
+    Users authenticate via their Google account. Firebase exchanges the Google ID token for a Firebase credential, then the app verifies role membership in the backend.
+  </Card>
+</CardGroup>
+
+---
+
+## Email & Password Flow
+
+<Steps>
+  <Step title="Validate Credentials Client-Side">
+    Before any network request, the app validates the email format with a regex and runs all password rules. Validation errors appear inline in real time.
+
+    ```jsx
+    const isValidEmail = (email) => {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      return emailRegex.test(email);
+    };
+
+    const validatePassword = (password) => {
+      const errors = [];
+
+      if (password.length < 8) {
+        errors.push("Mínimo 8 caracteres");
+      }
+      if (!/[A-Z]/.test(password)) {
+        errors.push("Al menos una letra mayúscula");
+      }
+      if (!/[a-z]/.test(password)) {
+        errors.push("Al menos una letra minúscula");
+      }
+      if (!/[0-9]/.test(password)) {
+        errors.push("Al menos un número");
+      }
+      if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
+        errors.push("Al menos un carácter especial (@, #, $, etc.)");
+      }
+
+      return {
+        isValid: errors.length === 0,
+        errors: errors
+      };
+    };
+    ```
+
+    <Note>
+      **Password requirements** — every password must satisfy all five rules simultaneously:
+      - Minimum **8 characters**
+      - At least one **uppercase** letter (A–Z)
+      - At least one **lowercase** letter (a–z)
+      - At least one **digit** (0–9)
+      - At least one **special character** (`@`, `#`, `$`, `!`, etc.)
+    </Note>
+  </Step>
+
+  <Step title="POST to Role Endpoint">
+    The app first attempts the `autoridad` endpoint. If that fails (wrong role or bad credentials), it falls back to the `transportista` endpoint. Both requests use the same body shape.
+
+    <Tabs>
+      <Tab title="Autoridad Login">
+        **Endpoint:** `POST /login/login`
+
+        ```json
+        {
+          "correo": "autoridad@example.com",
+          "contrasena": "MiContraseña@1"
+        }
+        ```
+
+        <ParamField body="correo" type="string" required>
+          The authority user's registered email address. Normalized to lowercase and trimmed before sending.
+        </ParamField>
+
+        <ParamField body="contrasena" type="string" required>
+          The account password. Must satisfy the five complexity rules validated client-side before the request is made.
+        </ParamField>
+
+        **Success response (no MFA):**
+
+        <ResponseField name="requiresMFA" type="boolean">
+          `false` when TOTP is not configured for this account. The full `autoridad` object is included in the response.
+        </ResponseField>
+
+        <ResponseField name="autoridad" type="object">
+          The authenticated authority profile. Contains nested `usuario` with at minimum `usuario.id`.
+        </ResponseField>
+
+        <ResponseField name="email" type="string">
+          The normalized email address of the authenticated user.
+        </ResponseField>
+
+        **MFA-required response:**
+
+        <ResponseField name="requiresMFA" type="boolean">
+          `true` when TOTP has been enabled. The app reads `resp.data.email` and stores it in `mfaEmail` state, then routes to the MFA verification screen.
+        </ResponseField>
+      </Tab>
+
+      <Tab title="Transportista Login">
+        **Endpoint:** `POST /login/transportista`
+
+        ```json
+        {
+          "correo": "transportista@example.com",
+          "contrasena": "MiContraseña@1"
+        }
+        ```
+
+        <ParamField body="correo" type="string" required>
+          The driver's registered email address. Normalized to lowercase and trimmed before sending.
+        </ParamField>
+
+        <ParamField body="contrasena" type="string" required>
+          The account password. Must satisfy the five complexity rules validated client-side before the request is made.
+        </ParamField>
+
+        **Success response (no MFA):**
+
+        <ResponseField name="requiresMFA" type="boolean">
+          `false` when TOTP is not configured for this account. The full `transportista` object is included in the response.
+        </ResponseField>
+
+        <ResponseField name="transportista" type="object">
+          The authenticated driver profile. Contains nested `usuario` with at minimum `usuario.id`.
+        </ResponseField>
+
+        <ResponseField name="email" type="string">
+          The normalized email address of the authenticated user.
+        </ResponseField>
+
+        **MFA-required response:**
+
+        <ResponseField name="requiresMFA" type="boolean">
+          `true` when TOTP has been enabled. The app reads `resp.data.email` and stores it in `mfaEmail` state, then routes to the MFA verification screen.
+        </ResponseField>
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Handle MFA Redirect (if required)">
+    When either login endpoint returns `requiresMFA: true`, the app stores the email and user type, then renders the MFA verification screen instead of a dashboard.
+
+    ```jsx
+    // From handleLoginNormal in Login.jsx
+    if (resp.data.requiresMFA) {
+      showToast("Código MFA enviado a tu autenticador", "info");
+      setMfaEmail(resp.data.email);
+      setMfaUserType("autoridad"); // or "transportista"
+      setShowMFAVerification(true);
+      setLoading(false);
+      return;
+    }
+    ```
+
+    The MFA verification step requires two sequential requests:
+
+    1. **Verify the TOTP code** — `POST /mfa/verify-login` with `{ email, code }`:
+
+    ```jsx
+    const verifyResponse = await API.post("/mfa/verify-login", {
+      email: mfaEmail,
+      code: parseInt(mfaCode)
+    });
+    ```
+
+    2. **Complete the login** — `POST /login/complete-mfa` with `{ email, userType }`:
+
+    ```jsx
+    const completeResponse = await API.post("/login/complete-mfa", {
+      email: mfaEmail,
+      userType: mfaUserType  // "autoridad" or "transportista"
+    });
+    ```
+
+    On success, `completeResponse.data` contains the same `autoridad` or `transportista` object as a non-MFA login, and the user is routed to their dashboard.
+  </Step>
+
+  <Step title="Route to Dashboard">
+    After a successful login (with or without MFA), the app extracts `usuario.id` from the profile and passes the full data object to either `DashboardAutoridad` or `DashboardTransportista`:
+
+    ```jsx
+    const autoridadData = resp.data.autoridad;
+    const userId = autoridadData?.usuario?.id;
+
+    setCurrentUserData({
+      user: { email: correo },
+      rol: 'autoridad',
+      datos: {
+        ...autoridadData,
+        userId: userId
+      }
+    });
+
+    setShowDashboardAutoridad(true);
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Password Reset
+
+Users who have forgotten their password can request a reset link from the login screen.
+
+**Endpoint:** `POST /password/request-reset?correo=<email>`
+
+```jsx
+await API.post("/password/request-reset?correo=" + resetEmail);
+```
+
+<Info>
+  The reset link is delivered by email and is valid for **15 minutes**. The endpoint returns an error if the email address is not registered in the system.
+</Info>
+
+The email is validated with the same `isValidEmail` regex before the request is made — no network call is fired for malformed addresses.
+
+---
+
+## Logout
+
+Logging out clears all local state — credentials, dashboard visibility, MFA state, and the current user object. Firebase notification tokens are unregistered so the device no longer receives push notifications for the previous session.
+
+```jsx
+const handleLogout = async () => {
+  setLoading(true);
+
+  setCorreo("");
+  setPassword("");
+  setCurrentUserData(null);
+  setGoogleUserData(null);
+  setShowDashboardAutoridad(false);
+  setShowDashboardTransportista(false);
+  setShowMFAVerification(false);
+  setMfaCode("");
+
+  // firebaseNotificationService.unregisterToken() is called by the
+  // dashboard components before invoking onLogout
+  if (onClose) {
+    onClose();
+  }
+};
+```
+
+<Warning>
+  Skipping logout without unregistering the FCM token means the device will continue to receive push notifications for the previous user's account until the token expires.
+</Warning>

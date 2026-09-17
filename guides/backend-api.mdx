@@ -1,0 +1,461 @@
+---
+title: "RutaMovil REST API Reference and Axios Configuration"
+sidebarTitle: "Backend API"
+description: "Complete REST API reference for RutaMovil: Axios instance setup, all known endpoints grouped by domain, request/response shapes, and usage examples."
+---
+
+All network communication between the RutaMovil (Sicher) mobile app and its Spring Boot backend goes through a single pre-configured **Axios instance** exported from `src/services/api.jsx`. This page documents that instance, every REST endpoint called by the app (sourced directly from the component code), request and response field shapes for key endpoints, and practical usage examples.
+
+<Note>
+  The Axios instance already sets `baseURL`, `timeout`, and `Content-Type` for
+  every request. Do **not** repeat these values in individual `API.get()` or
+  `API.post()` calls — pass only the path and the request body/params.
+</Note>
+
+---
+
+## Axios Instance
+
+```jsx src/services/api.jsx
+import axios from "axios";
+
+const api = axios.create({
+  baseURL: "https://backend-spring-527951342134.us-central1.run.app/api",
+  timeout: 15000,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+export default api;
+```
+
+### Configuration
+
+| Property | Value |
+|---|---|
+| **Base URL** | `https://backend-spring-527951342134.us-central1.run.app/api` |
+| **Timeout** | `15000` ms (15 seconds) |
+| **Content-Type** | `application/json` |
+
+### Importing the instance
+
+```jsx
+import API from '../services/api';
+
+// GET request
+const response = await API.get('/autoridades');
+
+// POST request
+const response = await API.post('/login/login', { correo, contrasena });
+```
+
+---
+
+## Authentication Endpoints
+
+<Tabs>
+  <Tab title="Autoridad Login">
+    ### POST /login/login
+
+    Email and password login for **Autoridades** (traffic authorities). The
+    response differs depending on whether the account has MFA enabled.
+
+    ```jsx src/Components/Login.jsx
+    const resp = await API.post("/login/login", {
+      correo: correo.toLowerCase().trim(),
+      contrasena: password
+    });
+    ```
+
+    **Request body:**
+
+    <ParamField body="correo" type="string" required>
+      The autoridad's email address. The app normalises it to lowercase before
+      sending.
+    </ParamField>
+
+    <ParamField body="contrasena" type="string" required>
+      The account password. Must meet the client-side policy: minimum 8
+      characters, at least one uppercase letter, one lowercase letter, one
+      digit, and one special character.
+    </ParamField>
+
+    **Response — MFA required:**
+
+    <ResponseField name="requiresMFA" type="boolean">
+      `true` when the account has TOTP MFA enabled. The client must redirect to
+      the MFA verification screen.
+    </ResponseField>
+
+    <ResponseField name="email" type="string">
+      The authoritative email address to use in subsequent MFA calls.
+    </ResponseField>
+
+    **Response — login successful (no MFA):**
+
+    <ResponseField name="requiresMFA" type="boolean">
+      `false` when MFA is not enabled.
+    </ResponseField>
+
+    <ResponseField name="autoridad" type="object">
+      The full autoridad record. Contains a nested `usuario` object with an
+      `id` field used as `userId` throughout the app.
+    </ResponseField>
+  </Tab>
+
+  <Tab title="Transportista Login">
+    ### POST /login/transportista
+
+    Email and password login for **Transportistas** (drivers).
+
+    ```jsx src/Components/Login.jsx
+    const resp = await API.post("/login/transportista", {
+      correo: correo.toLowerCase().trim(),
+      contrasena: password
+    });
+    ```
+
+    **Request body:**
+
+    <ParamField body="correo" type="string" required>
+      The transportista's email address. Normalised to lowercase by the app.
+    </ParamField>
+
+    <ParamField body="contrasena" type="string" required>
+      The account password.
+    </ParamField>
+
+    **Response — MFA required:**
+
+    <ResponseField name="requiresMFA" type="boolean">
+      `true` when the account has TOTP MFA enabled.
+    </ResponseField>
+
+    <ResponseField name="email" type="string">
+      The authoritative email address for the MFA step.
+    </ResponseField>
+
+    **Response — login successful (no MFA):**
+
+    <ResponseField name="requiresMFA" type="boolean">
+      `false`.
+    </ResponseField>
+
+    <ResponseField name="transportista" type="object">
+      The full transportista record, including a nested `usuario.id`.
+    </ResponseField>
+  </Tab>
+
+  <Tab title="Google Login">
+    ### POST /login/google-login
+
+    Called after Firebase successfully signs the user in with Google. Checks
+    whether MFA is enabled for the matched backend account.
+
+    ```jsx src/Components/Login.jsx
+    const loginResponse = await API.post("/login/google-login", {
+      email: userCredential.user.email,
+      userType: usuario.rol
+    });
+    ```
+
+    **Request body:**
+
+    <ParamField body="email" type="string" required>
+      The email address returned by Firebase Google Sign-In.
+    </ParamField>
+
+    <ParamField body="userType" type="string" required>
+      Role of the matched backend account: `"autoridad"` or
+      `"transportista"`.
+    </ParamField>
+
+    **Response:**
+
+    <ResponseField name="requiresMFA" type="boolean">
+      `true` if MFA is enabled for this account. The client must route to the
+      MFA verification screen using the same `email` and `userType`.
+    </ResponseField>
+  </Tab>
+
+  <Tab title="Complete MFA">
+    ### POST /login/complete-mfa
+
+    Finalises login after a successful TOTP code verification. Returns the
+    full user record for the authenticated role.
+
+    ```jsx src/Components/Login.jsx
+    const completeResponse = await API.post("/login/complete-mfa", {
+      email: mfaEmail,
+      userType: mfaUserType
+    });
+    ```
+
+    **Request body:**
+
+    <ParamField body="email" type="string" required>
+      The email stored in `mfaEmail` state — set when the initial login
+      response indicated `requiresMFA: true`.
+    </ParamField>
+
+    <ParamField body="userType" type="string" required>
+      `"autoridad"` or `"transportista"`.
+    </ParamField>
+
+    **Response:**
+
+    <ResponseField name="autoridad" type="object">
+      Present when `userType` is `"autoridad"`. Full autoridad record with
+      nested `usuario.id`.
+    </ResponseField>
+
+    <ResponseField name="transportista" type="object">
+      Present when `userType` is `"transportista"`. Full transportista record
+      with nested `usuario.id`.
+    </ResponseField>
+  </Tab>
+</Tabs>
+
+---
+
+## MFA Endpoints
+
+<Accordion title="POST /mfa/verify-login — Verify TOTP code">
+  Validates the 6-digit TOTP code entered by the user during the MFA
+  verification screen.
+
+  ```jsx src/Components/Login.jsx
+  const verifyResponse = await API.post("/mfa/verify-login", {
+    email: mfaEmail,
+    code: parseInt(mfaCode)
+  });
+  ```
+
+  **Request body:**
+
+  <ParamField body="email" type="string" required>
+    The user's email address.
+  </ParamField>
+
+  <ParamField body="code" type="number" required>
+    The 6-digit TOTP code parsed as an integer. The UI enforces a maximum
+    length of 6 characters and uses a numeric keyboard.
+  </ParamField>
+</Accordion>
+
+<Accordion title="GET /mfa/status/:userId — Check MFA status">
+  Returns whether MFA is currently enabled for a given user ID.
+
+  ```jsx
+  const response = await API.get(`/mfa/status/${userId}`);
+  // response.data => { mfaEnabled: true }
+  ```
+
+  **Response:**
+
+  <ResponseField name="mfaEnabled" type="boolean">
+    `true` if the user has completed MFA setup (TOTP secret enrolled);
+    `false` otherwise.
+  </ResponseField>
+</Accordion>
+
+---
+
+## Password Reset
+
+<Accordion title="POST /password/request-reset — Send reset email">
+  Sends a password reset link to the provided email address. The link is valid
+  for **15 minutes**.
+
+  ```jsx src/Components/Login.jsx
+  await API.post("/password/request-reset?correo=" + resetEmail);
+  ```
+
+  <ParamField query="correo" type="string" required>
+    The email address to send the reset link to. Passed as a query parameter
+    (not in the request body).
+  </ParamField>
+
+  <Warning>
+    The reset token expires after 15 minutes. If the user does not complete the
+    password reset within that window, they must request a new link.
+  </Warning>
+</Accordion>
+
+---
+
+## User Lookup Endpoints
+
+These endpoints are used by the Google Sign-In flow to resolve whether an
+authenticated Google account matches an existing backend record.
+
+<Tabs>
+  <Tab title="GET /autoridades">
+    Returns the full list of autoridad records. Used client-side to find a
+    match by `usuario.correo`.
+
+    ```jsx src/Components/Login.jsx
+    const responseAutoridades = await API.get('/autoridades');
+    const autoridades = responseAutoridades.data || [];
+    const autoridadEncontrada = autoridades.find(
+      a => a.usuario?.correo?.toLowerCase() === email.toLowerCase()
+    );
+    ```
+
+    **Response:** Array of autoridad objects, each containing a nested
+    `usuario` with at minimum `correo` and `id`.
+  </Tab>
+
+  <Tab title="GET /transportistas">
+    Returns the full list of transportista records. Used client-side to find a
+    match by `usuario.correo`.
+
+    ```jsx src/Components/Login.jsx
+    const responseTransportistas = await API.get('/transportistas');
+    const transportistas = responseTransportistas.data || [];
+    const transportistaEncontrado = transportistas.find(
+      t => t.usuario?.correo?.toLowerCase() === email.toLowerCase()
+    );
+    ```
+
+    **Response:** Array of transportista objects, each containing a nested
+    `usuario` with at minimum `correo` and `id`.
+  </Tab>
+</Tabs>
+
+---
+
+## FCM Token Endpoints
+
+Called by `FirebaseService.saveTokenToBackend()` to register a device's FCM
+push token with the backend after login.
+
+<Tabs>
+  <Tab title="POST /autoridades/fcm-token">
+    Registers or updates the FCM device token for an autoridad.
+
+    ```jsx src/services/firebase.jsx
+    await API.post('/autoridades/fcm-token', {
+      userId,
+      fcmToken: token
+    });
+    ```
+
+    <ParamField body="userId" type="string | number" required>
+      The autoridad's backend user ID (`usuario.id`).
+    </ParamField>
+
+    <ParamField body="fcmToken" type="string" required>
+      The Firebase Cloud Messaging device registration token.
+    </ParamField>
+  </Tab>
+
+  <Tab title="POST /transportistas/fcm-token">
+    Registers or updates the FCM device token for a transportista.
+
+    ```jsx src/services/firebase.jsx
+    await API.post('/transportistas/fcm-token', {
+      userId,
+      fcmToken: token
+    });
+    ```
+
+    <ParamField body="userId" type="string | number" required>
+      The transportista's backend user ID (`usuario.id`).
+    </ParamField>
+
+    <ParamField body="fcmToken" type="string" required>
+      The Firebase Cloud Messaging device registration token.
+    </ParamField>
+  </Tab>
+</Tabs>
+
+---
+
+## Routes & Reports
+
+### GET /reportes/rutas/transportista/:id
+
+Returns the complete route history for a specific transportista. Used by the
+`MisRutas` component to populate the driver's route list.
+
+```jsx src/Components/MisRutas.jsx
+const response = await API.get(`/reportes/rutas/transportista/${idTransportista}`);
+setRutas(Array.isArray(response.data) ? response.data : []);
+```
+
+**Path parameter:**
+
+<ParamField path="id" type="string | number" required>
+  The transportista's backend user ID.
+</ParamField>
+
+**Response:** An array of route objects. Key fields consumed by the app:
+
+<ResponseField name="idEstableceRuta" type="number">
+  Unique identifier for the route assignment record. Used as the React list
+  `key`.
+</ResponseField>
+
+<ResponseField name="estado" type="boolean">
+  Route status. `true` = active / in progress; `false` = completed.
+</ResponseField>
+
+<ResponseField name="fecha" type="string">
+  ISO 8601 date string for when the route was established.
+</ResponseField>
+
+<ResponseField name="direccionorigen" type="string">
+  Human-readable origin address.
+</ResponseField>
+
+<ResponseField name="direcciondestino" type="string">
+  Human-readable destination address.
+</ResponseField>
+
+<ResponseField name="ruta" type="object">
+  Nested route definition object with the following fields:
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `nombre` | `string` | Route display name |
+  | `distancia` | `number` | Distance in kilometres |
+  | `tiempo` | `number` | Estimated travel time in minutes |
+  | `ciudad.nombreCiudad` | `string` | City name |
+  | `ciudad.provincia.nombreProvincia` | `string` | Province name |
+  | `ciudad.clima` | `object` | Climate data: `nombreClima`, `temperatura`, `humedad`, `viento` |
+</ResponseField>
+
+---
+
+## Error Handling
+
+The Axios instance does not define a global response interceptor — error
+handling is done per-call in the component layer. The standard pattern used
+across the app:
+
+```jsx
+try {
+  const response = await API.post('/login/login', { correo, contrasena });
+  // handle success
+} catch (error) {
+  // error.response?.data contains the backend error body
+  // error.message is the Axios/network error message
+  console.error('API error:', error);
+}
+```
+
+<Tip>
+  If you need to add an auth token header in future iterations, add a request
+  interceptor directly to the exported `api` instance in
+  `src/services/api.jsx`. All existing callers will pick up the header
+  automatically without any changes at the call sites.
+
+  ```jsx
+  api.interceptors.request.use((config) => {
+    config.headers.Authorization = `Bearer ${getStoredToken()}`;
+    return config;
+  });
+  ```
+</Tip>

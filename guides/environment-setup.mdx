@@ -1,0 +1,255 @@
+---
+title: "Set Up Your RutaMovil Development Environment"
+sidebarTitle: "Environment Setup"
+description: "Step-by-step guide to installing Node.js, React Native CLI, Android Studio, Xcode, and all JS dependencies needed to run RutaMovil locally."
+---
+
+RutaMovil (branded as **Sicher**) is a React Native 0.82 mobile application for road-safety management. This page walks you through every tool and configuration you need to get a working development environment on your machine — from installing the correct Node.js version through running the Metro bundler for the first time.
+
+## System Requirements
+
+<CardGroup cols={3}>
+  <Card title="Node.js ≥ 20" icon="node-js">
+    Required by the `engines` field in `package.json`. Use [nvm](https://github.com/nvm-sh/nvm) or the official installer.
+  </Card>
+  <Card title="npm (bundled)" icon="npm">
+    Comes with Node.js. Used to install JS dependencies and run project scripts.
+  </Card>
+  <Card title="React Native CLI v20" icon="mobile">
+    `@react-native-community/cli` v20 — installed as a dev dependency; use `npx react-native` to invoke it.
+  </Card>
+</CardGroup>
+
+### Android Requirements
+
+<CardGroup cols={2}>
+  <Card title="Android Studio" icon="android">
+    Latest stable release. Provides the SDK Manager, AVD Manager, and the Gradle toolchain.
+  </Card>
+  <Card title="JDK 17+" icon="java">
+    Required by Gradle. Android Studio ships a suitable JDK; alternatively install OpenJDK 17.
+  </Card>
+  <Card title="Android SDK — API 33+" icon="layers">
+    The project targets SDK 36 and compiles against SDK 36. Install at minimum API 33 via the SDK Manager.
+  </Card>
+  <Card title="ANDROID_HOME" icon="terminal">
+    Must point to your SDK directory (e.g. `~/Library/Android/sdk`). Add `$ANDROID_HOME/tools` and `$ANDROID_HOME/platform-tools` to `PATH`.
+  </Card>
+</CardGroup>
+
+### iOS Requirements (macOS only)
+
+<CardGroup cols={3}>
+  <Card title="Xcode 15+" icon="apple">
+    Install from the Mac App Store. Accept the licence and install Command Line Tools via `xcode-select --install`.
+  </Card>
+  <Card title="CocoaPods" icon="cube">
+    Ruby gem that manages native iOS dependencies. Install via `sudo gem install cocoapods` or via Homebrew.
+  </Card>
+  <Card title="Ruby Bundler" icon="gem">
+    Manages the project's Ruby gem versions. Install via `gem install bundler`.
+  </Card>
+</CardGroup>
+
+<Note>
+  iOS development requires macOS. Windows and Linux users can still build and run on Android.
+</Note>
+
+---
+
+## Setup Sequence
+
+<Steps>
+  <Step title="Verify Node.js version">
+    RutaMovil's `package.json` declares `"node": ">=20"`. Confirm you meet the requirement:
+
+    ```bash
+    node --version   # must print v20.x or higher
+    npm --version
+    ```
+
+    If you use nvm, switch to a compatible version:
+
+    ```bash
+    nvm install 20
+    nvm use 20
+    ```
+  </Step>
+
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/FajardoVasquez/rutamovil.git
+    cd rutamovil
+    ```
+  </Step>
+
+  <Step title="Install JavaScript dependencies">
+    <CodeGroup>
+      ```bash npm
+      npm install
+      ```
+
+      ```bash yarn
+      yarn install
+      ```
+    </CodeGroup>
+
+    This installs every package listed in `package.json` into `node_modules/`. The install may take 1–3 minutes on a first run due to the number of native modules.
+  </Step>
+
+  <Step title="Configure native credentials">
+    RutaMovil does **not** use a `.env` file. Firebase credentials are embedded in platform-specific native config files that you must obtain from the Firebase console and place manually:
+
+    | File | Destination |
+    |------|-------------|
+    | `google-services.json` | `android/app/google-services.json` |
+    | `GoogleService-Info.plist` | `ios/ruta/GoogleService-Info.plist` |
+
+    Both files are listed in `.gitignore` and are never committed to source control. See the [Android Build](/guides/android-build) and [iOS Build](/guides/ios-build) guides for details.
+  </Step>
+
+  <Step title="Verify your setup with React Native Doctor">
+    ```bash
+    npx react-native doctor
+    ```
+
+    The doctor command checks for Android Studio, Xcode, CocoaPods, and other environment dependencies, printing a pass/fail report for each one.
+  </Step>
+
+  <Step title="Start the Metro bundler">
+    <CodeGroup>
+      ```bash npm
+      npm start
+      ```
+
+      ```bash yarn
+      yarn start
+      ```
+    </CodeGroup>
+
+    Metro serves the JS bundle to the device or emulator. Keep this terminal open while developing.
+  </Step>
+</Steps>
+
+---
+
+## Key Dependencies
+
+The table below highlights the most important packages declared in `package.json`.
+
+<Accordion title="Runtime dependencies">
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `react-native` | `0.82.1` | Core framework |
+| `react` | `19.1.1` | React runtime |
+| `@react-native-firebase/app` | `^23.7.0` | Firebase SDK root module |
+| `@react-native-firebase/auth` | `^23.5.0` | Firebase Authentication |
+| `@react-native-firebase/messaging` | `^23.7.0` | Firebase Cloud Messaging (push notifications) |
+| `@react-native-google-signin/google-signin` | `^16.0.0` | Google Sign-In for Auth |
+| `react-native-maps` | `^1.26.18` | Google Maps integration |
+| `react-native-maps-directions` | `^1.9.0` | Turn-by-turn routing overlay |
+| `axios` | `^1.13.2` | HTTP client for the REST API |
+| `@stomp/stompjs` | (via peer) | STOMP over SockJS WebSocket |
+| `@react-native-community/geolocation` | `^3.4.0` | GPS location access |
+| `react-native-image-picker` | `^8.2.1` | Camera / gallery for accident photos |
+| `react-native-chart-kit` | `^6.12.0` | Charts in the authority reports dashboard |
+| `expo-speech` | `~14.0.7` | Text-to-speech for driver alerts |
+
+</Accordion>
+
+<Accordion title="Dev dependencies">
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `@react-native-community/cli` | `^20.0.0` | React Native CLI |
+| `@react-native/metro-config` | `0.82.1` | Metro bundler configuration helper |
+| `@react-native/eslint-config` | `0.82.1` | ESLint rule set |
+| `eslint` | `^8.19.0` | Linter |
+| `prettier` | `2.8.8` | Code formatter |
+| `typescript` | `^5.8.3` | TypeScript compiler |
+| `jest` | `^29.6.3` | Test runner |
+| `@babel/core` | `^7.25.2` | JavaScript transpiler |
+
+</Accordion>
+
+---
+
+## Metro Bundler Configuration
+
+RutaMovil's `metro.config.js` extends the default React Native Metro configuration via `@react-native/metro-config`:
+
+```js metro.config.js
+const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
+
+/**
+ * Metro configuration
+ * https://reactnative.dev/docs/metro
+ *
+ * @type {import('@react-native/metro-config').MetroConfig}
+ */
+const config = {};
+
+module.exports = mergeConfig(getDefaultConfig(__dirname), config);
+```
+
+No custom resolvers or transformers are needed. If you add a package that requires special handling (e.g., a pure-Node module), extend `config` here.
+
+---
+
+## Code Quality Tools
+
+### ESLint
+
+The project uses `@react-native/eslint-config` as its base rule set, which enforces React Native best practices:
+
+```js .eslintrc.js
+module.exports = {
+  root: true,
+  extends: '@react-native',
+};
+```
+
+Run the linter with:
+
+<CodeGroup>
+  ```bash npm
+  npm run lint
+  ```
+
+  ```bash yarn
+  yarn lint
+  ```
+</CodeGroup>
+
+### Prettier
+
+Prettier `2.8.8` is installed as a dev dependency. Most editors pick it up automatically via the VSCode extension. Run it manually with:
+
+```bash
+npx prettier --write "src/**/*.{js,jsx,ts,tsx}"
+```
+
+### TypeScript
+
+TypeScript `^5.8.3` is available for type checking. The project uses `@react-native/typescript-config` as its base `tsconfig`. JSX source files (`.jsx`) co-exist alongside typed files — TypeScript is used incrementally.
+
+---
+
+## Running Tests
+
+RutaMovil uses **Jest** `^29.6.3` for unit testing.
+
+<CodeGroup>
+  ```bash npm
+  npm test
+  ```
+
+  ```bash yarn
+  yarn test
+  ```
+</CodeGroup>
+
+<Tip>
+  Pass `--watchAll` to run Jest in interactive watch mode during development: `npm test -- --watchAll`.
+</Tip>

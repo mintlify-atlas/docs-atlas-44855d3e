@@ -1,0 +1,294 @@
+---
+title: "Build and Run RutaMovil on iOS"
+sidebarTitle: "iOS Build"
+description: "Configure Xcode, CocoaPods, and GoogleService-Info.plist to build and run the RutaMovil app on an iOS Simulator or physical iPhone."
+---
+
+RutaMovil runs on iOS through a standard React Native Xcode project. This page covers every step of the first-time iOS setup — from installing CocoaPods through launching the app on a Simulator — as well as guidance on physical-device builds, the Xcode project structure, and App Store preparation. iOS builds are **macOS-only** and require Xcode 15 or later.
+
+## Prerequisites
+
+<CardGroup cols={3}>
+  <Card title="macOS" icon="apple">
+    iOS development is only possible on macOS. Windows and Linux users should follow the [Android Build](/guides/android-build) guide instead.
+  </Card>
+  <Card title="Xcode 15+" icon="hammer">
+    Install from the Mac App Store. After install, accept the licence and run `xcode-select --install` to get the Command Line Tools.
+  </Card>
+  <Card title="CocoaPods" icon="cube">
+    Manages native iOS dependencies declared in `ios/Podfile`. Install via `sudo gem install cocoapods` or `brew install cocoapods`.
+  </Card>
+</CardGroup>
+
+<Note>
+  Physical device testing and App Store distribution require an active **Apple Developer Program** membership ($99/year). You can run and debug on the iOS Simulator without a paid account.
+</Note>
+
+---
+
+## Firebase iOS Setup
+
+RutaMovil uses `@react-native-firebase/app`, `@react-native-firebase/auth`, and `@react-native-firebase/messaging` on iOS. These packages require a native configuration file provided by the Firebase console.
+
+<Warning>
+  Without `GoogleService-Info.plist` placed at `ios/ruta/GoogleService-Info.plist`, **Firebase Auth and FCM will not initialise**. Login, Google Sign-In, MFA, and all push notifications will be broken. This file is intentionally excluded from version control. You must obtain it from the Firebase console.
+</Warning>
+
+<Steps>
+  <Step title="Open the Firebase console">
+    Go to [console.firebase.google.com](https://console.firebase.google.com) and select the RutaMovil project.
+  </Step>
+  <Step title="Download GoogleService-Info.plist">
+    Navigate to **Project Settings → General**, scroll to *Your apps*, and click **Download GoogleService-Info.plist** under the iOS app entry.
+  </Step>
+  <Step title="Place the file">
+    Copy the file into the iOS app directory:
+
+    ```
+    ios/ruta/GoogleService-Info.plist
+    ```
+
+    Do **not** place it in the `ios/` root — it must live inside the `ruta/` target folder so Xcode includes it in the app bundle.
+  </Step>
+</Steps>
+
+---
+
+## First-Time Setup Sequence
+
+<Steps>
+  <Step title="Install JavaScript dependencies">
+    If you have not already done so from the environment setup guide, install npm packages from the project root:
+
+    ```bash
+    npm install
+    ```
+  </Step>
+
+  <Step title="Install Ruby bundler">
+    The project uses Bundler to lock CocoaPods to a specific version. Install it with:
+
+    ```bash
+    gem install bundler
+    ```
+
+    Then install the exact gem versions defined in `ios/Gemfile.lock`:
+
+    ```bash
+    cd ios
+    bundle install
+    ```
+  </Step>
+
+  <Step title="Install CocoaPods dependencies">
+    From the `ios/` directory, run pod install through Bundler so it uses the locked CocoaPods version:
+
+    ```bash
+    bundle exec pod install
+    ```
+
+    This reads `ios/Podfile`, resolves all native dependencies (including Firebase, Maps, and every other native module), and writes `ios/Podfile.lock`. The first run may take several minutes.
+
+    <Info>
+      Re-run `bundle exec pod install` every time you add or update a native JavaScript dependency (any package with an `ios/` pod in `node_modules`).
+    </Info>
+  </Step>
+
+  <Step title="Place GoogleService-Info.plist">
+    Follow the [Firebase iOS Setup](#firebase-ios-setup) section above to download and place the config file at `ios/ruta/GoogleService-Info.plist` before proceeding.
+  </Step>
+
+  <Step title="Verify the NODE_BINARY path">
+    Xcode build scripts need to locate your Node.js binary. The `.xcode.env` file handles this automatically:
+
+    ```bash ios/.xcode.env
+    # NODE_BINARY variable contains the PATH to the node executable.
+    export NODE_BINARY=$(command -v node)
+    ```
+
+    If you use a version manager (nvm, fnm, Volta), create a local override that points to the correct path:
+
+    ```bash ios/.xcode.env.local  (not committed to git)
+    export NODE_BINARY=/Users/yourname/.nvm/versions/node/v20.x.x/bin/node
+    ```
+  </Step>
+
+  <Step title="Run on the Simulator">
+    From the project root:
+
+    ```bash
+    npm run ios
+    ```
+
+    This launches Metro (if not running), compiles the native target, and boots the default iOS Simulator with the app installed.
+  </Step>
+</Steps>
+
+---
+
+## Podfile
+
+The `ios/Podfile` defines the native target `ruta` and delegates dependency resolution to React Native's standard helpers:
+
+```ruby ios/Podfile
+require Pod::Executable.execute_command('node', ['-p',
+  'require.resolve(
+    "react-native/scripts/react_native_pods.rb",
+    {paths: [process.argv[1]]},
+  )', __dir__]).strip
+
+platform :ios, min_ios_version_supported
+prepare_react_native_project!
+
+target 'ruta' do
+  config = use_native_modules!
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  post_install do |installer|
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false,
+    )
+  end
+end
+```
+
+<Tip>
+  After every `npm install` that adds a new native module, run `bundle exec pod install` from `ios/` to link the new pod before rebuilding.
+</Tip>
+
+---
+
+## AppDelegate
+
+The iOS entry point is `ios/ruta/AppDelegate.swift`. It bootstraps the React Native runtime using the modern `RCTReactNativeFactory` API introduced in React Native 0.76+:
+
+```swift ios/ruta/AppDelegate.swift
+import UIKit
+import React
+import React_RCTAppDelegate
+import ReactAppDependencyProvider
+
+@main
+class AppDelegate: UIResponder, UIApplicationDelegate {
+  var window: UIWindow?
+
+  var reactNativeDelegate: ReactNativeDelegate?
+  var reactNativeFactory: RCTReactNativeFactory?
+
+  func application(
+    _ application: UIApplication,
+    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+  ) -> Bool {
+    let delegate = ReactNativeDelegate()
+    let factory = RCTReactNativeFactory(delegate: delegate)
+    delegate.dependencyProvider = RCTAppDependencyProvider()
+
+    reactNativeDelegate = delegate
+    reactNativeFactory = factory
+
+    window = UIWindow(frame: UIScreen.main.bounds)
+
+    factory.startReactNative(
+      withModuleName: "ruta",
+      in: window,
+      launchOptions: launchOptions
+    )
+
+    return true
+  }
+}
+
+class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {
+  override func sourceURL(for bridge: RCTBridge) -> URL? {
+    self.bundleURL()
+  }
+
+  override func bundleURL() -> URL? {
+#if DEBUG
+    RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: "index")
+#else
+    Bundle.main.url(forResource: "main", withExtension: "jsbundle")
+#endif
+  }
+}
+```
+
+The module name `"ruta"` passed to `startReactNative` must match the `AppRegistry.registerComponent` call in `index.js`.
+
+---
+
+## Opening the Project in Xcode
+
+For physical device testing, code signing, and App Store archive builds, open the workspace (not the `.xcodeproj`) in Xcode:
+
+```bash
+open ios/ruta.xcodeproj
+```
+
+<Note>
+  If CocoaPods has been run, Xcode will generate an `.xcworkspace` file. When that exists, open `ios/ruta.xcworkspace` instead so that pods are included in the build.
+</Note>
+
+Inside Xcode you can:
+- Select a target device (Simulator or connected iPhone/iPad)
+- Configure code signing under **Signing & Capabilities** (requires your Apple Developer account)
+- Create an Archive build (**Product → Archive**) for TestFlight or App Store submission
+
+---
+
+## App Bundle ID and Info.plist
+
+The iOS bundle identifier is `com.ruta`, set in Xcode's target Build Settings as `$(PRODUCT_BUNDLE_IDENTIFIER)`. This value is referenced in `ios/ruta/Info.plist`:
+
+```xml ios/ruta/Info.plist (excerpt)
+<key>CFBundleIdentifier</key>
+<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+```
+
+This ID must match the bundle ID registered in the Firebase console for `GoogleService-Info.plist` to be accepted.
+
+---
+
+## Privacy Manifest
+
+`ios/ruta/PrivacyInfo.xcprivacy` is included in the Xcode project. This file is **required by Apple** for App Store submission (mandatory since Spring 2024) and declares the privacy data types your app accesses.
+
+<Warning>
+  Before submitting to the App Store, review `PrivacyInfo.xcprivacy` to ensure all data categories — especially location data used for route tracking and accident reporting — are correctly declared. Missing or inaccurate declarations can result in App Store rejection.
+</Warning>
+
+---
+
+## Development vs Release Builds
+
+<Tabs>
+  <Tab title="Debug (Simulator / Device)">
+    ```bash
+    # From project root — launches default simulator
+    npm run ios
+
+    # Target a specific simulator
+    npx react-native run-ios --simulator "iPhone 16"
+
+    # Target a connected physical device
+    npx react-native run-ios --device "Your iPhone Name"
+    ```
+
+    Debug builds connect to Metro for fast JS reload. The `bundleURL()` method in `AppDelegate.swift` returns the Metro dev server URL in `DEBUG` mode.
+  </Tab>
+  <Tab title="Release (Archive)">
+    1. Open `ios/ruta.xcworkspace` in Xcode.
+    2. Select **Any iOS Device (arm64)** as the build target.
+    3. Choose **Product → Archive**.
+    4. In the Organizer window, click **Distribute App** to upload to App Store Connect or export an IPA.
+
+    Release builds bundle JS into `main.jsbundle` using `Bundle.main.url(forResource: "main", withExtension: "jsbundle")` in `AppDelegate.swift`.
+  </Tab>
+</Tabs>

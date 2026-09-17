@@ -1,0 +1,420 @@
+---
+title: "Real-Time Push Notifications and WebSocket Feed"
+sidebarTitle: "Notifications"
+description: "How RutaMovil delivers alerts via Firebase Cloud Messaging push notifications and a STOMP/SockJS WebSocket feed with exponential-backoff reconnection."
+---
+
+**RutaMovil** (Sicher) keeps all three user roles informed in real time through two complementary channels: **Firebase Cloud Messaging (FCM)** for device-level push notifications that work even when the app is closed, and a **STOMP over SockJS WebSocket** connection that streams accident events to connected clients while the app is in the foreground. This page details the initialisation flow, channel configuration, notification types, WebSocket lifecycle, and token cleanup on logout.
+
+---
+
+## Channel Architecture
+
+<CardGroup cols={2}>
+  <Card title="Firebase Cloud Messaging" icon="bell">
+    Delivers push notifications to device trays via Google's FCM infrastructure. Works in all app states: foreground, background, and quit. Token registration is per-user and per-role.
+  </Card>
+  <Card title="STOMP / SockJS WebSocket" icon="bolt">
+    Maintains a persistent bidirectional connection to the Spring Boot backend. Subscribes to `/topic/accidentes` for live accident broadcasts. Supports up to 5 exponential-backoff reconnect attempts.
+  </Card>
+</CardGroup>
+
+---
+
+## Firebase Notification Service
+
+All FCM logic is encapsulated in `src/services/FirebaseNotificationService.jsx` (`FirebaseNotificationService` class, exported as a singleton) and `src/services/firebase.jsx` (`FirebaseService` class with a companion `useFirebaseNotifications` hook).
+
+### Initialisation Flow
+
+<Steps>
+  <Step title="Call initialize(userId, userRole)">
+    Components call `firebaseNotificationService.initialize(userId, userRole)` once the user has authenticated. The service stores `userId` and `userRole` internally for later token registration and cleanup.
+
+    ```jsx
+    // src/services/FirebaseNotificationService.jsx
+    async initialize(userId, userRole) {
+      this.userId   = userId;
+      this.userRole = userRole;
+
+      const hasPermission = await this.requestPermission();
+      if (!hasPermission) return false;
+
+      await this.getFCMToken();
+      this.setupListeners();
+
+      if (this.fcmToken) {
+        await this.registerTokenInBackend();
+      }
+      return true;
+    }
+    ```
+  </Step>
+  <Step title="Request Notification Permissions">
+    On **Android 13+** (API 33+), the service requests the `POST_NOTIFICATIONS` runtime permission via `PermissionsAndroid`. On earlier Android versions, notification permission is granted by default. On **iOS**, `messaging().requestPermission()` triggers the system prompt; both `AUTHORIZED` and `PROVISIONAL` statuses are accepted.
+
+    ```jsx
+    // src/services/FirebaseNotificationService.jsx
+    async requestPermission() {
+      if (Platform.OS === 'android') {
+        if (Platform.Version >= 33) {
+          const granted = await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+          );
+          return granted === PermissionsAndroid.RESULTS.GRANTED;
+        }
+        return true; // Android < 13 does not need runtime permission
+      }
+      const authStatus = await messaging().requestPermission();
+      return (
+        authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
+        authStatus === messaging.AuthorizationStatus.PROVISIONAL
+      );
+    }
+    ```
+  </Step>
+  <Step title="Obtain the FCM Token">
+    `messaging().getToken()` returns the device-specific registration token. The first 30 characters are logged for debugging; the full token is stored as `this.fcmToken`.
+  </Step>
+  <Step title="Register Token in the Backend">
+    The token is sent to the REST API using a role-specific endpoint:
+
+    ```jsx
+    // src/services/FirebaseNotificationService.jsx
+    const endpoint = this.userRole === 'autoridad'
+      ? `/autoridades/${this.userId}/fcm-token`
+      : `/transportistas/${this.userId}/fcm-token`;
+
+    await API.post(endpoint, { fcmToken: this.fcmToken });
+    ```
+  </Step>
+  <Step title="Set Up Notification Listeners">
+    `setupListeners()` registers three FCM callbacks and one token-refresh watcher.
+  </Step>
+</Steps>
+
+<Note>
+  FCM tokens are stored per-user in the backend database. Autoridades use `POST /autoridades/{userId}/fcm-token` and transportistas use `POST /transportistas/{userId}/fcm-token`. When the token is refreshed by FCM (e.g. after an app reinstall), the `onTokenRefresh` listener automatically re-registers the new token without requiring the user to log out and back in.
+</Note>
+
+---
+
+## Android Notification Channel
+
+The `FirebaseService` (in `src/services/firebase.jsx`) creates an Android notification channel via **Notifee** before displaying any foreground notification. The channel configuration is:
+
+```jsx
+// src/services/firebase.jsx — Notifee channel creation
+const channelId = await notifee.createChannel({
+  id:          'sicher-accidents',
+  name:        'Accidentes Sicher',
+  importance:  AndroidImportance.HIGH,
+  visibility:  AndroidVisibility.PUBLIC,
+  sound:       'default',
+  vibration:   true,
+});
+```
+
+<CardGroup cols={2}>
+  <Card title="Channel ID" icon="tag">
+    `sicher-accidents` — all accident notifications are posted to this channel, allowing users to configure them independently in Android system settings.
+  </Card>
+  <Card title="Importance" icon="signal">
+    `AndroidImportance.HIGH` — notifications appear as heads-up alerts (peek over other apps), play a sound, and trigger vibration pattern `[300, 500]` ms.
+  </Card>
+</CardGroup>
+
+---
+
+## Foreground vs Background Handling
+
+<Tabs>
+  <Tab title="Foreground">
+    When the app is open and active, FCM does **not** automatically display a system notification. The `onMessage` listener fires instead:
+
+    **`FirebaseNotificationService`** shows a native `Alert` dialog with the notification title and body:
+
+    ```jsx
+    // src/services/FirebaseNotificationService.jsx — foreground listener
+    this.foregroundListener = messaging().onMessage(async (remoteMessage) => {
+      Alert.alert(
+        remoteMessage.notification?.title || '🚨 Nueva Notificación',
+        remoteMessage.notification?.body  || 'Tienes una nueva alerta',
+        [
+          { text: 'Cerrar', style: 'cancel' },
+          { text: 'Ver', onPress: () => console.log('Ver notificación') },
+        ]
+      );
+    });
+    ```
+
+    **`FirebaseService`** (used in dashboards via `useFirebaseNotifications`) instead calls `notifee.displayNotification` to render a styled local notification with the `sicher-accidents` Android channel, high importance, vibration, and the app's brand colour `#1E3A8A`.
+  </Tab>
+  <Tab title="Background">
+    When the app is in the background, FCM delivers the notification directly to the Android/iOS notification tray. The `setBackgroundMessageHandler` is registered at the module level:
+
+    ```jsx
+    // src/services/firebase.jsx — background handler
+    messaging().setBackgroundMessageHandler(async remoteMessage => {
+      console.log('🚀 Notificación recibida en background:', remoteMessage);
+      // Handled by the OS notification tray automatically
+    });
+    ```
+
+    Tapping the tray notification while the app is backgrounded triggers `onNotificationOpenedApp`, which calls `handleNotificationPress` to navigate to the relevant screen.
+  </Tab>
+  <Tab title="App Quit (Cold Start)">
+    If the user taps a notification that was delivered while the app was completely closed, `messaging().getInitialNotification()` returns the triggering `remoteMessage` on the next app launch:
+
+    ```jsx
+    // src/services/firebase.jsx — cold-start notification handler
+    messaging()
+      .getInitialNotification()
+      .then(remoteMessage => {
+        if (remoteMessage) {
+          this.handleNotificationPress(remoteMessage);
+        }
+      });
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Notification Types
+
+All notification payloads carry a `data.tipo` field that drives navigation on press:
+
+<CardGroup cols={3}>
+  <Card title="NUEVO_ACCIDENTE" icon="car-burst">
+    Sent to **autoridades** when a transportista submits a new report. Navigates to the **Aprobar** tab with the accident ID in `data.accidenteId`.
+  </Card>
+  <Card title="ACCIDENTE_APROBADO" icon="circle-check">
+    Sent to the **transportista** who filed the report when an authority approves it. Navigates to the **Estado** tab.
+  </Card>
+  <Card title="ACCIDENTE_RECHAZADO" icon="circle-xmark">
+    Sent to the **transportista** when their report is rejected. Also navigates to the **Estado** tab.
+  </Card>
+</CardGroup>
+
+```jsx
+// src/services/firebase.jsx — notification press handler routing
+handleNotificationPress(remoteMessage) {
+  const { data } = remoteMessage;
+  switch (data?.tipo) {
+    case 'NUEVO_ACCIDENTE':
+      console.log('🚨 Nuevo accidente reportado - ID:', data.accidenteId);
+      // Navigate to the approval tab (authority)
+      break;
+    case 'ACCIDENTE_APROBADO':
+    case 'ACCIDENTE_RECHAZADO':
+      console.log('✅/❌ Estado del accidente actualizado - ID:', data.accidenteId);
+      // Navigate to the status tab (transportista)
+      break;
+    default:
+      console.log('📋 Notificación genérica');
+  }
+}
+```
+
+---
+
+## WebSocket Service — STOMP over SockJS
+
+`src/services/websocketService.jsx` exports a singleton `WebSocketService` instance that wraps `@stomp/stompjs` with a `SockJS` transport factory.
+
+### `connect()` Method
+
+```jsx
+// src/services/websocketService.jsx — connect signature and core setup
+connect(url, onMessageCallback, onConnectCallback, onErrorCallback) {
+  if (this.isConnected) return; // guard against double-connect
+
+  this.client = new Client({
+    webSocketFactory: () => new SockJS(url),
+
+    reconnectDelay:        this.reconnectDelay, // 3000 ms base
+    heartbeatIncoming:     10000,
+    heartbeatOutgoing:     10000,
+
+    // React Native compatibility flags
+    forceBinaryWSFrames:       true,
+    appendMissingNULLonIncoming: true,
+
+    onConnect: (frame) => {
+      this.isConnected = true;
+      this.reconnectAttempts = 0;
+
+      const subscription = this.client.subscribe(
+        '/topic/accidentes',
+        (message) => {
+          const data = JSON.parse(message.body);
+          if (onMessageCallback) onMessageCallback(data);
+        }
+      );
+      this.subscriptions.push(subscription);
+      if (onConnectCallback) onConnectCallback();
+    },
+
+    onStompError: (frame) => {
+      this.isConnected = false;
+      if (onErrorCallback) onErrorCallback(frame);
+      this.attemptReconnect(url, onMessageCallback, onConnectCallback, onErrorCallback);
+    },
+  });
+
+  this.client.activate();
+}
+```
+
+<ParamField path="url" type="string" required>
+  The SockJS endpoint URL, e.g. `https://backend-spring-527951342134.us-central1.run.app/ws`.
+</ParamField>
+<ParamField path="onMessageCallback" type="(data: object) => void">
+  Called for every message published to `/topic/accidentes`. Receives the parsed JSON body.
+</ParamField>
+<ParamField path="onConnectCallback" type="() => void">
+  Fires once when the STOMP session is successfully established.
+</ParamField>
+<ParamField path="onErrorCallback" type="(frame: object) => void">
+  Called on STOMP errors. After this fires, the reconnect strategy begins.
+</ParamField>
+
+### `send()` Method
+
+```jsx
+// src/services/websocketService.jsx — publish a message
+send(destination, body) {
+  if (!this.isConnected || !this.client) return;
+
+  this.client.publish({
+    destination: destination,
+    body: JSON.stringify(body),
+  });
+}
+```
+
+<ParamField path="destination" type="string" required>
+  The STOMP destination, e.g. `/app/accidentes`.
+</ParamField>
+<ParamField path="body" type="object" required>
+  The message payload. Serialised to JSON automatically by `send()`.
+</ParamField>
+
+---
+
+## Reconnect Strategy
+
+The `attemptReconnect` method implements **exponential backoff** capped at 5 attempts:
+
+```jsx
+// src/services/websocketService.jsx — exponential backoff reconnection
+attemptReconnect(url, onMessageCallback, onConnectCallback, onErrorCallback) {
+  if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+    console.error('❌ Máximo de intentos de reconexión alcanzado');
+    return;
+  }
+
+  this.reconnectAttempts++;
+  const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+  // Attempt 1: 3000 ms | Attempt 2: 6000 ms | Attempt 3: 12000 ms
+  // Attempt 4: 24000 ms | Attempt 5: 48000 ms
+
+  setTimeout(() => {
+    this.connect(url, onMessageCallback, onConnectCallback, onErrorCallback);
+  }, delay);
+}
+```
+
+| Attempt | Delay |
+|---|---|
+| 1 | 3 s |
+| 2 | 6 s |
+| 3 | 12 s |
+| 4 | 24 s |
+| 5 | 48 s |
+
+After 5 failed attempts, reconnection stops. The UI should surface an offline indicator using the `getConnectionStatus()` return value.
+
+### Connection Status
+
+```jsx
+// src/services/websocketService.jsx — status accessor
+getConnectionStatus() {
+  return {
+    isConnected:       this.isConnected,
+    reconnectAttempts: this.reconnectAttempts,
+  };
+}
+```
+
+---
+
+## Token Cleanup on Logout
+
+When a user signs out, both the backend token record and the local FCM registration must be cleared:
+
+```jsx
+// src/services/FirebaseNotificationService.jsx — unregisterToken
+async unregisterToken() {
+  const endpoint = this.userRole === 'autoridad'
+    ? `/autoridades/${this.userId}/fcm-token`
+    : `/transportistas/${this.userId}/fcm-token`;
+
+  await API.delete(endpoint);   // Remove token from the backend database
+  await messaging().deleteToken(); // Invalidate the token on the FCM side
+
+  this.fcmToken = null;
+}
+```
+
+The `cleanup()` method must also be called to remove the foreground and token-refresh listeners that were registered during `setupListeners()`:
+
+```jsx
+// src/services/FirebaseNotificationService.jsx — listener cleanup
+cleanup() {
+  if (this.foregroundListener)    this.foregroundListener();
+  if (this.tokenRefreshListener)  this.tokenRefreshListener();
+}
+```
+
+<Warning>
+  Failing to call `unregisterToken()` at logout will cause the server to continue sending push notifications to a device that is no longer associated with the user's session. Always pair `unregisterToken()` with `cleanup()` in your logout sequence to prevent stale-token delivery and unnecessary backend load.
+</Warning>
+
+---
+
+## `useFirebaseNotifications` Hook
+
+For simpler integration inside dashboard components, `firebase.jsx` exports a React hook:
+
+```jsx
+// src/services/firebase.jsx — hook usage in a dashboard
+import { useFirebaseNotifications } from '../services/firebase';
+
+export default function DashboardAutoridad({ userId }) {
+  const { notificationCount } = useFirebaseNotifications(userId, 'autoridad');
+  // notificationCount increments as notifications arrive
+}
+```
+
+The hook runs `FirebaseService.initialize()` followed by `saveTokenToBackend()` inside a `useEffect` that re-fires whenever `userId` or `userType` changes. It returns `{ notificationCount }` for badge display.
+
+---
+
+## WebSocket Disconnect
+
+Call `disconnect()` when navigating away from screens that subscribe to live accident updates:
+
+```jsx
+// src/services/websocketService.jsx — clean disconnect
+disconnect() {
+  this.subscriptions.forEach(sub => sub.unsubscribe());
+  this.subscriptions = [];
+  this.client.deactivate();
+  this.isConnected = false;
+  this.client = null;
+}
+```
+
+All STOMP subscriptions are iterated and unsubscribed before the client is deactivated, preventing ghost subscriptions that could trigger callbacks on unmounted components.

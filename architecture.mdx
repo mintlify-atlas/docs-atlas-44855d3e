@@ -1,0 +1,266 @@
+---
+title: "RutaMovil System Architecture and Tech Stack"
+sidebarTitle: "Architecture"
+description: "Explore how RutaMovil's React Native client, Spring Boot REST backend, Firebase services, and WebSocket channels connect to deliver real-time road safety management."
+---
+
+RutaMovil is built on a three-tier architecture: a **React Native 0.82 mobile client** that runs on both Android and iOS, a **Spring Boot REST API** deployed on Google Cloud Run that owns all business logic and persistence, and a **Firebase** layer that handles identity, push notifications, and the initial token exchange. A persistent **STOMP/SockJS WebSocket** channel sits alongside the REST API to push accident events to authority dashboards without polling. Understanding how these tiers relate to each other is the foundation for working on any part of the codebase.
+
+## High-Level Data Flow
+
+The diagram below shows the sequence from first launch to a fully authenticated dashboard session.
+
+```
+┌─────────────────────────┐
+│   React Native Client   │
+│  (Android / iOS)        │
+└────────────┬────────────┘
+             │ 1. Firebase Auth (email/password or Google Sign-In)
+             ▼
+┌─────────────────────────┐
+│   Firebase Auth         │◄──── Google Sign-In (OAuth2 ID Token)
+│   (Identity Platform)   │
+└────────────┬────────────┘
+             │ 2. POST /api/login/login  (role lookup + MFA check)
+             ▼
+┌─────────────────────────┐
+│  Spring Boot REST API   │
+│  Cloud Run              │
+│  /api                   │
+└────────┬────────────────┘
+         │ 3a. REST responses (JSON) — dashboards, reports, approvals
+         │ 3b. FCM push (via Firebase Admin SDK) — NUEVO_ACCIDENTE,
+         │     ACCIDENTE_APROBADO, ACCIDENTE_RECHAZADO
+         │ 3c. STOMP /topic/accidentes — live WebSocket feed
+         ▼
+┌─────────────────────────┐
+│  React Native Client    │
+│  DashboardTransportista │
+│  DashboardAutoridad     │
+│  DashboardAdmin         │
+└─────────────────────────┘
+```
+
+## Backend REST API
+
+All HTTP communication goes through a single Axios instance configured in `src/services/api.jsx`. The base URL, 15-second timeout, and `Content-Type` header are set once and shared across every API call in the app.
+
+```jsx
+// src/services/api.jsx
+import axios from "axios";
+
+const api = axios.create({
+  baseURL: "https://backend-spring-527951342134.us-central1.run.app/api",
+  timeout: 15000,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+export default api;
+```
+
+Import this instance wherever you need to call the backend:
+
+```jsx
+import API from '../services/api';
+
+// Role lookup during login
+const response = await API.post("/login/login", {
+  correo: correo.toLowerCase().trim(),
+  contrasena: password,
+});
+
+// MFA verification
+const verifyResponse = await API.post("/mfa/verify-login", {
+  email: mfaEmail,
+  code: parseInt(mfaCode),
+});
+```
+
+<Info>
+  The backend is stateless. There is no session cookie — role and identity data returned at login time are kept in React component state and passed down as props to dashboards.
+</Info>
+
+## Firebase Services
+
+Firebase provides two distinct capabilities in RutaMovil: **identity** (via Firebase Auth) and **push notifications** (via Firebase Cloud Messaging).
+
+### Authentication (`src/services/firebase.jsx`)
+
+The `FirebaseService` class wraps `@react-native-firebase/messaging` and Notifee into a single initialisation lifecycle:
+
+1. **Request permission** — calls `messaging().requestPermission()` on first launch.
+2. **Retrieve FCM token** — calls `messaging().getToken()` and stores the result.
+3. **Register token** with the backend at `POST /transportistas/fcm-token` or `POST /autoridades/fcm-token`.
+4. **Listen for messages** — foreground messages are displayed as local Notifee notifications on the `sicher-accidents` Android channel; background messages are handled by the Firebase background handler.
+
+The `useFirebaseNotifications(userId, userType)` hook encapsulates the full initialization flow and is consumed inside each role dashboard.
+
+### Google Sign-In
+
+Google Sign-In is configured in `Login.jsx` using `@react-native-google-signin/google-signin`:
+
+```jsx
+GoogleSignin.configure({
+  webClientId:
+    "267093356780-61j6l12lhevi4a14q7aihook3bna9i64.apps.googleusercontent.com",
+  offlineAccess: true,
+  forceCodeForRefreshToken: true,
+});
+```
+
+The resulting `idToken` is exchanged for a Firebase credential via `GoogleAuthProvider.credential(idToken)`, then passed to `signInWithCredential(auth, googleCredential)`. After Firebase confirms the identity, the app calls `POST /api/login/google-login` to fetch the user's role and check MFA status.
+
+## Real-Time WebSocket Channel
+
+The `WebSocketService` class (`src/services/websocketService.jsx`) maintains a STOMP client over a SockJS transport. It subscribes to `/topic/accidentes` immediately on connect and delivers parsed JSON payloads to a caller-supplied callback:
+
+```jsx
+// src/services/websocketService.jsx
+import { Client } from '@stomp/stompjs';
+import SockJS from 'sockjs-client';
+
+// Inside WebSocketService.connect():
+this.client = new Client({
+  webSocketFactory: () => new SockJS(url),
+  reconnectDelay: this.reconnectDelay,       // 3 000 ms base
+  heartbeatIncoming: 10000,
+  heartbeatOutgoing: 10000,
+  forceBinaryWSFrames: true,
+  appendMissingNULLonIncoming: true,
+
+  onConnect: (frame) => {
+    const subscription = this.client.subscribe(
+      '/topic/accidentes',
+      (message) => {
+        const data = JSON.parse(message.body);
+        if (onMessageCallback) onMessageCallback(data);
+      }
+    );
+    this.subscriptions.push(subscription);
+  },
+});
+
+this.client.activate();
+```
+
+Reconnection uses exponential backoff (`reconnectDelay × 2^(attempt − 1)`) up to five attempts before giving up.
+
+## Component Map
+
+<CardGroup cols={2}>
+  <Card title="App.jsx" icon="house">
+    Root component wrapped in `SafeAreaProvider`. Renders a 10-second `Inicio` splash, then transitions to `Main`. Mounts `InternetChecker` unconditionally for connectivity monitoring.
+  </Card>
+  <Card title="Main.jsx" icon="bars">
+    Navigation shell. Renders the branded header, a slide-up menu modal (Ver Mapa / Inicio / Mi Cuenta), and a Login modal overlay. Routes between `Mapa` and `MapaRutas` based on menu state.
+  </Card>
+  <Card title="Login.jsx" icon="lock">
+    Full authentication flow: email/password, Google Sign-In, role selection for new Google users, TOTP MFA verification, password reset. Conditionally renders `DashboardAutoridad`, `DashboardTransportista`, or `LoginAdmin` on success.
+  </Card>
+  <Card title="DashboardTransportista.jsx" icon="truck">
+    Driver home screen. Provides tabs for submitting accident reports (Accidentes), viewing route history (MisRutas), and tracking report status. Initialises Firebase notifications via `useFirebaseNotifications`.
+  </Card>
+  <Card title="DashboardAutoridad.jsx" icon="shield-halved">
+    Authority home screen. Provides tabs for the approval queue (AprobarAccidentes), analytics charts (Reportes), and the live WebSocket accident feed. Initialises Firebase notifications.
+  </Card>
+  <Card title="DashboardAdmin.jsx" icon="user-gear">
+    Admin control panel. Manages user accounts, role assignments, and system configuration. Accessed through a separate `LoginAdmin` credential check.
+  </Card>
+  <Card title="MapaRutas.jsx" icon="map">
+    Interactive Google Maps view via `react-native-maps`. Renders the driver's assigned route using `react-native-maps-directions`, plots incident markers, and provides turn-by-turn voice guidance through `expo-speech`.
+  </Card>
+  <Card title="Accidentes.jsx" icon="triangle-exclamation">
+    Accident report form. Captures incident type, description, datetime, device GPS coordinates, and optional photo attachments. Submits via `POST /api/accidentes` through the shared Axios instance.
+  </Card>
+  <Card title="AprobarAccidentes.jsx" icon="clipboard-check">
+    Approval queue for Autoridades. Lists pending reports with full details. Approve/reject actions call the REST API and trigger FCM notifications to the originating Transportista.
+  </Card>
+  <Card title="MFASetup.jsx" icon="key">
+    TOTP enrollment wizard. Displays a QR code for the user's authenticator app and validates the first code to confirm successful setup. Calls the `/mfa/*` backend endpoints.
+  </Card>
+  <Card title="src/services/api.jsx" icon="server">
+    Shared Axios instance. `baseURL`, 15 s timeout, and JSON headers configured once. Imported by every component that communicates with the Spring Boot backend.
+  </Card>
+  <Card title="src/services/websocketService.jsx" icon="plug">
+    Singleton STOMP/SockJS client. Subscribes to `/topic/accidentes`, delivers live accident events, and manages exponential-backoff reconnection.
+  </Card>
+</CardGroup>
+
+## Tech Stack Reference
+
+<Tabs>
+  <Tab title="Mobile Client">
+    | Library | Version | Purpose |
+    |---|---|---|
+    | `react-native` | `0.82.1` | Cross-platform mobile framework |
+    | `react` | `19.1.1` | UI component model |
+    | `react-native-maps` | `^1.26.18` | Google Maps rendering |
+    | `react-native-maps-directions` | `^1.9.0` | Route polylines via Directions API |
+    | `@react-native-community/geolocation` | `^3.4.0` | Device GPS |
+    | `react-native-geolocation-service` | `^5.3.1` | High-accuracy GPS on Android/iOS |
+    | `react-native-image-picker` | `^8.2.1` | Camera / gallery for accident photos |
+    | `react-native-chart-kit` | `^6.12.0` | Analytics charts in Reportes |
+    | `expo-speech` | `~14.0.7` | Turn-by-turn voice guidance |
+    | `react-native-linear-gradient` | `^2.8.3` | UI gradient accents |
+    | `react-native-vector-icons` | `^10.3.0` | Icon set (FontAwesome) |
+    | `react-native-safe-area-context` | `^5.5.2` | Safe-area insets |
+  </Tab>
+  <Tab title="Firebase & Auth">
+    | Library | Version | Purpose |
+    |---|---|---|
+    | `@react-native-firebase/app` | `^23.7.0` | Firebase core initialisation |
+    | `@react-native-firebase/auth` | `^23.5.0` | Email/password + Google auth |
+    | `@react-native-firebase/messaging` | `^23.7.0` | FCM push notifications |
+    | `@react-native-google-signin/google-signin` | `^16.0.0` | Google OAuth2 sign-in |
+  </Tab>
+  <Tab title="Networking">
+    | Library | Version | Purpose |
+    |---|---|---|
+    | `axios` | `^1.13.2` | REST API HTTP client |
+    | `@stomp/stompjs` | (transitive) | STOMP messaging over WebSocket |
+    | `sockjs-client` | (transitive) | SockJS WebSocket transport |
+    | `@react-native-community/netinfo` | `^11.4.1` | Network connectivity detection |
+  </Tab>
+  <Tab title="Build & Tooling">
+    | Tool | Version | Purpose |
+    |---|---|---|
+    | `@react-native-community/cli` | `^20.0.0` | React Native CLI |
+    | `@react-native/metro-config` | `0.82.1` | Metro bundler config |
+    | `@react-native/babel-preset` | `0.82.1` | Babel transform preset |
+    | `typescript` | `^5.8.3` | Type checking |
+    | `jest` | `^29.6.3` | Unit testing |
+    | `eslint` | `^8.19.0` | Linting |
+  </Tab>
+</Tabs>
+
+## Authentication Flow Detail
+
+```
+User taps "Entrar"
+        │
+        ▼
+  Login.jsx renders
+        │
+        ├─── Email / Password ──► POST /api/login/login
+        │                                │
+        │                    ┌───────────┴────────────┐
+        │              requiresMFA: true        requiresMFA: false
+        │                    │                         │
+        │           MFA code entry screen      Role dashboard renders
+        │                    │
+        │           POST /api/mfa/verify-login
+        │                    │
+        │           POST /api/login/complete-mfa
+        │                    │
+        │              Role dashboard renders
+        │
+        └─── Google Sign-In ─► Firebase Auth ──► POST /api/login/google-login
+                                                         │
+                                             (same MFA branch as above)
+```
+
+<Note>
+  Admin authentication bypasses the standard login flow. The **🔑 Acceso administrador** button at the bottom of the Login screen opens `LoginAdmin`, which has its own credential verification against a separate admin endpoint.
+</Note>

@@ -1,0 +1,100 @@
+{
+  "projectType": "saas",
+  "projectName": "RutaMovil",
+  "projectDescription": "RutaMovil (Sicher) is a React Native mobile app for road safety management that connects transportistas, autoridades, and administrators to report, approve, and track traffic accidents in real time.",
+  "theme": "palm",
+  "primaryColor": "#64dcfc",
+  "lightColor": "#448494",
+  "darkColor": "#24252d",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/map-navigation",
+              "features/accident-reporting",
+              "features/real-time-notifications"
+            ]
+          },
+          {
+            "group": "User Roles",
+            "pages": [
+              "roles/transportista",
+              "roles/autoridad",
+              "roles/admin"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": [
+              "guides/authentication",
+              "guides/mfa-setup",
+              "guides/google-signin"
+            ]
+          },
+          {
+            "group": "Setup & Deployment",
+            "pages": [
+              "guides/environment-setup",
+              "guides/android-build",
+              "guides/ios-build"
+            ]
+          },
+          {
+            "group": "Services & Integrations",
+            "pages": [
+              "guides/firebase-setup",
+              "guides/websocket",
+              "guides/backend-api"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Interactive map with real-time GPS and route navigation (Google Maps + react-native-maps)",
+    "Accident reporting with photos, victims, and vehicle data",
+    "Three distinct user roles: Transportista, Autoridad, and Admin",
+    "Multi-factor authentication (TOTP) via authenticator apps",
+    "Firebase push notifications for accident status updates",
+    "Real-time WebSocket feed for live accident events (STOMP over SockJS)",
+    "Accident approval workflow for authority users",
+    "Route tracking and history for transportistas",
+    "Admin dashboard with system logs and reports",
+    "Offline-tolerant GPS with adaptive precision algorithm",
+    "Google Sign-In and email/password authentication (Firebase Auth)",
+    "Password reset via email"
+  ],
+  "publicApiSurface": [
+    "POST /login/login — authenticate as autoridad",
+    "POST /login/transportista — authenticate as transportista",
+    "POST /login/google-login — Google OAuth login",
+    "POST /login/complete-mfa — complete MFA login flow",
+    "POST /mfa/verify-login — verify TOTP code",
+    "GET /mfa/status/:userId — get MFA enabled status",
+    "POST /password/request-reset — request password reset email",
+    "GET /autoridades — list all authority users",
+    "GET /transportistas — list all transportista users",
+    "POST /autoridades/fcm-token — save FCM push token for autoridad",
+    "POST /transportistas/fcm-token — save FCM push token for transportista",
+    "GET /reportes/rutas/transportista/:id — get route history for a transportista",
+    "WebSocket /topic/accidentes — subscribe to live accident events (STOMP)"
+  ]
+}

@@ -1,0 +1,311 @@
+---
+title: "Set Up Multi-Factor Authentication (TOTP) in RutaMovil"
+sidebarTitle: "MFA Setup"
+description: "Configure Time-based One-Time Password (TOTP) MFA for Autoridad and Transportista accounts in RutaMovil using any authenticator app."
+---
+
+RutaMovil supports **Time-based One-Time Password (TOTP)** multi-factor authentication for `autoridad` and `transportista` accounts, adding a second layer of security beyond the standard password. Once enabled, users must supply a 6-digit rotating code from their authenticator app every time they sign in. The `MFASetup` component manages the entire lifecycle — checking the current status, generating a QR code, verifying the first code, and handling disablement — all within a slide-up modal.
+
+<Note>
+  MFA is available to **Autoridad** and **Transportista** roles only. Admin accounts use a separate authentication path and do not go through the `MFASetup` component.
+</Note>
+
+---
+
+## Component Props
+
+The `MFASetup` component is rendered as a `<Modal>` and accepts the following props:
+
+<ParamField body="visible" type="boolean" required>
+  Controls whether the modal is displayed. Pass `true` to open the setup flow and `false` to hide it.
+</ParamField>
+
+<ParamField body="userId" type="string | number" required>
+  The numeric ID from `usuario.id` of the authenticated user. Used as the path parameter in all MFA API calls (e.g., `/mfa/status/:userId`).
+</ParamField>
+
+<ParamField body="userEmail" type="string" required>
+  The authenticated user's email address. Displayed on the confirmation screen once MFA is active.
+</ParamField>
+
+<ParamField body="onClose" type="function" required>
+  Callback invoked when the user dismisses the modal. Sensitive state (`verificationCode`, `disableCode`) is cleared before `onClose` is called.
+</ParamField>
+
+---
+
+## Setup Flow
+
+The component uses an internal `step` state (`1` through `4`) to drive the four-screen wizard. When the modal opens, it immediately calls `GET /mfa/status/:userId` and jumps to **Step 4** if MFA is already enabled, or starts at **Step 1** if it is not.
+
+<Steps>
+  <Step title="Step 1 — Check Current Status & Introduction">
+    As soon as `visible` becomes `true` and `userId` is available, the component fetches the current MFA state from the API:
+
+    ```jsx
+    const checkMFAStatus = async () => {
+      setCheckingStatus(true);
+      try {
+        const response = await API.get(`/mfa/status/${userId}`);
+        const isEnabled = response.data.mfaEnabled;
+        setMfaEnabled(isEnabled);
+
+        if (isEnabled) {
+          setStep(4); // Already active — skip to confirmation screen
+        } else {
+          setStep(1); // Not yet configured
+          setQrUrl('');
+          setSecret('');
+          setBackupCodes([]);
+          setVerificationCode('');
+        }
+      } catch (error) {
+        setStep(1); // Default to step 1 on error
+      } finally {
+        setCheckingStatus(false);
+      }
+    };
+    ```
+
+    **Endpoint:** `GET /mfa/status/:userId`
+
+    <ResponseField name="mfaEnabled" type="boolean">
+      `true` if TOTP has already been configured and verified for this user; `false` if MFA is not yet set up.
+    </ResponseField>
+
+    If `mfaEnabled` is `false`, the user sees the introduction screen listing the benefits of MFA and a **"Habilitar MFA"** button. Pressing it calls `POST /mfa/enable/:userId`, which triggers Step 2.
+  </Step>
+
+  <Step title="Step 2 — Scan QR Code & Save Backup Codes">
+    Calling `POST /mfa/enable/:userId` returns a QR code URL, a plain-text TOTP secret, and a set of single-use backup codes:
+
+    ```jsx
+    const handleEnableMFA = async () => {
+      setLoading(true);
+      try {
+        const response = await API.post(`/mfa/enable/${userId}`);
+
+        setQrUrl(response.data.qrUrl);
+        setSecret(response.data.secret);
+        setBackupCodes(response.data.backupCodes);
+        setStep(2);
+      } catch (error) {
+        Alert.alert('Error', 'No se pudo generar el código QR');
+      } finally {
+        setLoading(false);
+      }
+    };
+    ```
+
+    <ResponseField name="qrUrl" type="string">
+      A URL pointing to the generated QR code image. Rendered directly in an `<Image>` component at 250 × 250 dp.
+    </ResponseField>
+
+    <ResponseField name="secret" type="string">
+      The raw TOTP secret for users who prefer to add the account manually in their authenticator app instead of scanning the QR.
+    </ResponseField>
+
+    <ResponseField name="backupCodes" type="string[]">
+      An array of one-time-use recovery codes. Displayed in a numbered list so the user can record them before proceeding.
+    </ResponseField>
+
+    <Warning>
+      **Backup codes are shown exactly once.** They are only available on this screen during the initial setup. Store them in a secure location (password manager, printed copy) before tapping **Continuar** — they cannot be retrieved again after you leave this step.
+    </Warning>
+
+    The user opens Google Authenticator, Authy, or any TOTP-compatible app and either scans the QR code or enters the secret manually. After saving the backup codes, the user taps **Continuar** to advance to the verification step.
+  </Step>
+
+  <Step title="Step 3 — Verify the First TOTP Code">
+    The user enters the 6-digit code currently displayed in their authenticator app. The **"Activar MFA"** button is disabled until exactly 6 digits have been typed.
+
+    ```jsx
+    const handleVerifyCode = async () => {
+      if (!verificationCode || verificationCode.length !== 6) {
+        Alert.alert('Error', 'Ingresa un código de 6 dígitos');
+        return;
+      }
+
+      setLoading(true);
+      try {
+        await API.post(`/mfa/verify/${userId}`, {
+          code: parseInt(verificationCode)
+        });
+
+        // Re-check status — server confirms mfaEnabled: true
+        await checkMFAStatus();
+
+        Alert.alert('✅ MFA Activado', 'La autenticación de dos factores ha sido activada exitosamente');
+        setVerificationCode('');
+      } catch (error) {
+        Alert.alert('Error', 'Código inválido. Verifica e intenta nuevamente.');
+      } finally {
+        setLoading(false);
+      }
+    };
+    ```
+
+    **Endpoint:** `POST /mfa/verify/:userId`
+
+    ```json
+    {
+      "code": 123456
+    }
+    ```
+
+    <ParamField body="code" type="integer" required>
+      The 6-digit TOTP code parsed as an integer (`parseInt(verificationCode)`). Must match the current time window for the stored secret.
+    </ParamField>
+
+    On success, `checkMFAStatus()` is called again to confirm the server now reports `mfaEnabled: true`, which automatically advances the wizard to Step 4.
+  </Step>
+
+  <Step title="Step 4 — MFA Active Confirmation">
+    When MFA is active the component renders a status card showing the enabled state and the user's email. From here the user can either close the modal or initiate the disablement flow.
+
+    ```jsx
+    const renderStep4 = () => (
+      <View style={styles.stepContainer}>
+        <Text style={styles.title}>MFA Activo</Text>
+        <View style={styles.statusCard}>
+          <View style={styles.statusRow}>
+            <Text style={styles.statusLabel}>Estado:</Text>
+            <Text style={styles.statusValue}>✅ Habilitado</Text>
+          </View>
+          <View style={styles.statusRow}>
+            <Text style={styles.statusLabel}>Email:</Text>
+            <Text style={styles.statusValue}>{userEmail}</Text>
+          </View>
+        </View>
+
+        <TouchableOpacity style={styles.dangerButton} onPress={handleDisableMFA}>
+          <Text style={styles.dangerButtonText}>Desactivar MFA</Text>
+        </TouchableOpacity>
+      </View>
+    );
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Disabling MFA
+
+Disabling MFA requires the user to prove possession of their authenticator app by submitting a valid TOTP code. The flow is triggered from Step 4 and uses a separate nested `<Modal>` (`showDisableModal`) rather than navigating backwards through the wizard.
+
+<Steps>
+  <Step title="Confirm Intent">
+    Tapping **"Desactivar MFA"** on Step 4 presents a native `Alert` with a destructive confirmation button. Confirming opens the disable modal.
+  </Step>
+
+  <Step title="Enter Current TOTP Code">
+    The user types the current 6-digit code from their authenticator app into the disable modal's `TextInput`. The **"Desactivar MFA"** button remains disabled until all 6 digits are present.
+  </Step>
+
+  <Step title="Submit to API">
+    ```jsx
+    const handleConfirmDisable = async () => {
+      if (!disableCode || disableCode.length !== 6) {
+        Alert.alert('Error', 'Debes ingresar un código de 6 dígitos');
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const response = await API.post(`/mfa/disable/${userId}`, {
+          code: parseInt(disableCode)
+        });
+
+        setShowDisableModal(false);
+        setDisableCode('');
+
+        // Re-check status to return to Step 1
+        await checkMFAStatus();
+
+        Alert.alert('✅ MFA Desactivado', 'La autenticación de dos factores ha sido desactivada exitosamente');
+      } catch (error) {
+        const errorMsg = error.response?.data?.message || 'Código inválido';
+        Alert.alert('❌ Error', errorMsg);
+      } finally {
+        setLoading(false);
+      }
+    };
+    ```
+
+    **Endpoint:** `POST /mfa/disable/:userId`
+
+    ```json
+    {
+      "code": 654321
+    }
+    ```
+
+    On success the modal closes, `disableCode` is cleared, and `checkMFAStatus()` runs once more — returning the wizard to **Step 1** since `mfaEnabled` will now be `false`.
+  </Step>
+</Steps>
+
+---
+
+## API Reference Summary
+
+<Accordion title="GET /mfa/status/:userId">
+  Check whether MFA is currently enabled for a user.
+
+  **Response:**
+
+  <ResponseField name="mfaEnabled" type="boolean">
+    `true` if TOTP is configured and verified; `false` otherwise.
+  </ResponseField>
+</Accordion>
+
+<Accordion title="POST /mfa/enable/:userId">
+  Initialize MFA setup for a user. Returns QR code, secret, and backup codes.
+
+  **Response:**
+
+  <ResponseField name="qrUrl" type="string">
+    Image URL for the TOTP QR code, ready for display in an `<Image>` component.
+  </ResponseField>
+
+  <ResponseField name="secret" type="string">
+    Plain-text TOTP secret for manual entry into authenticator apps.
+  </ResponseField>
+
+  <ResponseField name="backupCodes" type="string[]">
+    Array of single-use recovery codes. **Displayed once — save immediately.**
+  </ResponseField>
+</Accordion>
+
+<Accordion title="POST /mfa/verify/:userId">
+  Verify the first TOTP code to activate MFA on the account.
+
+  **Request body:**
+
+  <ParamField body="code" type="integer" required>
+    Current 6-digit TOTP code from the authenticator app, submitted as an integer.
+  </ParamField>
+</Accordion>
+
+<Accordion title="POST /mfa/verify-login">
+  Verify a TOTP code during login when `requiresMFA: true` is returned by a login endpoint.
+
+  **Request body:**
+
+  <ParamField body="email" type="string" required>
+    The email address associated with the account being authenticated.
+  </ParamField>
+
+  <ParamField body="code" type="integer" required>
+    Current 6-digit TOTP code, submitted as an integer.
+  </ParamField>
+</Accordion>
+
+<Accordion title="POST /mfa/disable/:userId">
+  Disable MFA on the account, requiring proof of the current TOTP code.
+
+  **Request body:**
+
+  <ParamField body="code" type="integer" required>
+    Current 6-digit TOTP code from the authenticator app, submitted as an integer.
+  </ParamField>
+</Accordion>

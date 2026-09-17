@@ -1,0 +1,250 @@
+---
+title: "Transportista Role: Driver Dashboard and Features"
+sidebarTitle: "Transportista"
+description: "Complete guide to the Transportista role in RutaMovil — covering authentication, dashboard tabs, route history, accident reporting, and push notifications."
+---
+
+The **Transportista** (driver) role is the primary field-facing role in RutaMovil / Sicher. Transportistas use the app to report accidents in real time, track their active and historical routes, monitor the approval status of their reports, and receive push notifications about road conditions — all from a mobile-first dashboard designed for drivers on the go.
+
+## Authentication
+
+Transportistas sign in through the main login screen using either an email/password combination or Google Sign-In. Successful credentials are validated against the `POST /login/transportista` endpoint, which returns a user object and a `datosTransportista` payload used to hydrate the dashboard.
+
+<Tabs>
+  <Tab title="Email / Password">
+    Standard Firebase Auth login. The app posts to:
+
+    ```
+    POST /login/transportista
+    ```
+
+    On success the response provides `userData` (Firebase user) and `datosTransportista` (backend entity including `idTransportista`).
+  </Tab>
+  <Tab title="Google Sign-In">
+    Launches the Google Sign-In OAuth flow via `@react-native-google-signin/google-signin`. After the ID token is exchanged with Firebase Auth, the same `POST /login/transportista` flow resolves the backend entity.
+  </Tab>
+</Tabs>
+
+<Note>
+  After login, Firebase Cloud Messaging (FCM) is initialized for the transportista's device using `firebaseNotificationService.initialize(idTransportista, 'transportista')`. The FCM token is unregistered on logout.
+</Note>
+
+---
+
+## Dashboard Overview
+
+`DashboardTransportista` renders a persistent bottom navigation bar with five tabs. The active tab is tracked by the `tabActiva` state and determines which child component is rendered inside the main `ScrollView`.
+
+```jsx
+// DashboardTransportista.jsx — tab state
+const [tabActiva, setTabActiva] = useState('inicio');
+```
+
+<CardGroup cols={2}>
+  <Card title="🏠 Inicio" icon="house">
+    Home screen with welcome information (`InicioTransportista`).
+  </Card>
+  <Card title="🚛 Rutas" icon="truck">
+    Full route history powered by `MisRutas`.
+  </Card>
+  <Card title="🗺️ Mapa" icon="map">
+    Driver-specific live map (`MapaTransportista`).
+  </Card>
+  <Card title="🚨 Reporte" icon="triangle-exclamation">
+    Nearby accident report view (`ReporteAccidentesCercanos`).
+  </Card>
+  <Card title="📊 Estado" icon="chart-bar">
+    Accident status tracker (`EstadoAccidentesTransportista`).
+  </Card>
+</CardGroup>
+
+---
+
+## Tab: Inicio — `InicioTransportista`
+
+The home screen renders a welcome panel that greets the driver by name and displays summary information sourced from the `datosTransportista` and `userData` props passed down from the dashboard:
+
+```jsx
+{tabActiva === 'inicio' && (
+  <InicioTransportista
+    userData={userData}
+    datosTransportista={datosTransportista}
+  />
+)}
+```
+
+---
+
+## Tab: Mapa — `MapaTransportista`
+
+`MapaTransportista` presents a driver-specific interactive map built on `react-native-maps` and the Google Maps API. It receives the `idTransportista` to scope map data to the authenticated driver.
+
+```jsx
+{tabActiva === 'mapa' && (
+  <View style={styles.mapaContainer}>
+    <MapaTransportista
+      idTransportista={datosTransportista?.idTransportista}
+    />
+  </View>
+)}
+```
+
+For full map and routing documentation, see [Map & Navigation](/features/map-navigation).
+
+---
+
+## Tab: Reporte — Accident Reporting
+
+The **Reporte** tab opens `ReporteAccidentesCercanos`, which lets the driver view and submit reports for accidents near their current location. The full accident report form (`Accidentes`) is also accessible via a modal:
+
+```jsx
+{mostrarAccidentes && (
+  <Modal visible={true} animationType="slide">
+    <Accidentes
+      idTransportista={datosTransportista?.idTransportista}
+      onClose={() => setMostrarAccidentes(false)}
+    />
+  </Modal>
+)}
+```
+
+See [Accident Reporting](/features/accident-reporting) for the full field-by-field breakdown.
+
+---
+
+## Tab: Rutas — `MisRutas` (Route History)
+
+`MisRutas` fetches the transportista's complete route history from the backend and renders each route as a card with origin, destination, distance, duration, city, and weather data.
+
+### API Call
+
+```jsx
+// MisRutas.jsx
+const cargarRutas = async () => {
+  const response = await API.get(`/reportes/rutas/transportista/${idTransportista}`);
+  setRutas(Array.isArray(response.data) ? response.data : []);
+};
+```
+
+**Endpoint:** `GET /reportes/rutas/transportista/:id`
+
+### Filter Options
+
+Three filter buttons let drivers narrow the list:
+
+| Filter key    | Behavior                          |
+|---------------|-----------------------------------|
+| `todas`       | Shows all routes (default)        |
+| `activas`     | Only routes where `estado === true`  |
+| `finalizadas` | Only routes where `estado === false` |
+
+```jsx
+// MisRutas.jsx — filter logic
+const rutasFiltradas = rutas.filter(ruta => {
+  if (filtroActivo === 'todas') return true;
+  if (filtroActivo === 'activas') return ruta.estado === true;
+  if (filtroActivo === 'finalizadas') return ruta.estado === false;
+  return true;
+});
+```
+
+### Route Card Data
+
+Each route card surfaces:
+
+<Accordion title="Route card fields">
+  - **Nombre** — `ruta.ruta?.nombre` (e.g. "Ruta Quito–Guayaquil")
+  - **Origen / Destino** — `direccionorigen` / `direcciondestino`
+  - **Distancia** — `ruta.ruta?.distancia` (km, 1 decimal)
+  - **Tiempo** — `ruta.ruta?.tiempo` (formatted as `Xh Ym`)
+  - **Ciudad / Provincia** — nested `ciudad.nombreCiudad` / `provincia.nombreProvincia`
+  - **Fecha** — formatted with `es-EC` locale
+  - **Clima** — `temperatura`, `humedad`, `viento` when available
+</Accordion>
+
+---
+
+## Tab: Estado — `EstadoAccidentesTransportista`
+
+The **Estado** tab renders `EstadoAccidentesTransportista`, which shows the driver a live view of all their submitted accident reports and their current approval status (pending, approved, or rejected):
+
+```jsx
+{tabActiva === 'estado' && (
+  <View style={styles.mapaContainer}>
+    <EstadoAccidentesTransportista
+      idTransportista={datosTransportista?.idTransportista}
+    />
+  </View>
+)}
+```
+
+---
+
+## Notifications — `NotificacionesTransportista`
+
+Tapping the 🔔 bell icon in the header opens a full-screen modal containing `NotificacionesTransportista`, scoped to the driver's ID:
+
+```jsx
+{mostrarNotificaciones && (
+  <Modal visible={true} animationType="slide">
+    <NotificacionesTransportista
+      transportistaId={datosTransportista?.idTransportista}
+    />
+  </Modal>
+)}
+```
+
+Push notifications are delivered via Firebase Cloud Messaging. The service is initialized on dashboard mount and cleaned up on unmount or logout.
+
+---
+
+## Profile & Security
+
+A dropdown menu (⋮) in the header provides two account management options:
+
+<Steps>
+  <Step title="Ver Perfil">
+    Opens `PerfilTransportistaModal`, which accepts `transportistaId` and allows the driver to view and update their profile data.
+
+    ```jsx
+    <PerfilTransportistaModal
+      visible={showPerfilModal}
+      transportistaId={datosTransportista?.idTransportista}
+      onClose={() => setShowPerfilModal(false)}
+    />
+    ```
+  </Step>
+  <Step title="Configuración de Seguridad">
+    Opens the `MFASetup` modal to configure Time-based One-Time Password (TOTP) multi-factor authentication.
+
+    ```jsx
+    <MFASetup
+      visible={showMFASetup}
+      userId={datosTransportista?.userId || datosTransportista?.usuario?.idusuario}
+      userEmail={userData?.email || datosTransportista?.usuario?.correo}
+      onClose={() => setShowMFASetup(false)}
+    />
+    ```
+
+    See [MFA Setup](/guides/mfa-setup) for the full TOTP enrollment walkthrough.
+  </Step>
+</Steps>
+
+---
+
+## Related Pages
+
+<CardGroup cols={2}>
+  <Card title="Accident Reporting" icon="triangle-exclamation" href="/features/accident-reporting">
+    Full guide to submitting and managing accident reports from the field.
+  </Card>
+  <Card title="Map & Navigation" icon="map-location-dot" href="/features/map-navigation">
+    Interactive map, route plotting, and Google Maps integration details.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/guides/authentication">
+    Login flows, Google Sign-In, Firebase Auth, and session management.
+  </Card>
+  <Card title="MFA Setup" icon="shield-halved" href="/guides/mfa-setup">
+    Step-by-step TOTP multi-factor authentication enrollment guide.
+  </Card>
+</CardGroup>
